@@ -1,0 +1,17 @@
+# Node & Vite (Frontend)
+node_modules/
+dist/
+npm-debug.log*
+.env*
+
+# Python & FastAPI (Backend)
+venv/
+__pycache__/
+*.pyc
+*.sqlite3
+*.db
+.env
+
+# OS Files
+.DS_Store
+Thumbs.db
