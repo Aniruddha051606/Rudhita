@@ -1,6 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from typing import List
+from typing import Optional
 
 import models, schemas
 from database import get_db
@@ -8,8 +8,8 @@ from utils import get_current_user
 
 router = APIRouter(prefix="/cart", tags=["Shopping Cart"])
 
-# --- Helper Function: Get or Create Cart ---
-def get_user_cart(db: Session, user_id: int):
+
+def get_user_cart(db: Session, user_id: int) -> models.Cart:
     cart = db.query(models.Cart).filter(models.Cart.user_id == user_id).first()
     if not cart:
         cart = models.Cart(user_id=user_id)
@@ -19,69 +19,98 @@ def get_user_cart(db: Session, user_id: int):
     return cart
 
 
-# --- 1. VIEW CART ---
+def _cart_response(db: Session, user) -> schemas.CartResponse:
+    cart = get_user_cart(db, user.id)
+    total = sum(item.product.price * item.quantity for item in cart.items)
+    cr = schemas.CartResponse.model_validate(cart)
+    cr.cart_total = total
+    return cr
+
+
+# ── GET CART ──────────────────────────────────────────────────────────────────
 @router.get("/", response_model=schemas.CartResponse)
 def view_cart(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    cart = get_user_cart(db, current_user.id)
-    
-    # Dynamically calculate the total price of everything in the cart
-    total = sum([item.product.price * item.quantity for item in cart.items])
-    
-    # Attach the calculated total before sending it to the frontend
-    cart_response = schemas.CartResponse.model_validate(cart)
-    cart_response.cart_total = total
-    
-    return cart_response
+    return _cart_response(db, current_user)
 
 
-# --- 2. ADD ITEM TO CART ---
+# ── ADD ITEM ──────────────────────────────────────────────────────────────────
 @router.post("/add", response_model=schemas.CartResponse)
 def add_to_cart(
-    item_data: schemas.CartItemAdd, 
-    db: Session = Depends(get_db), 
-    current_user: models.User = Depends(get_current_user)
+    item_data: schemas.CartItemAdd,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
 ):
-    # 1. Verify the product exists and has enough stock
     product = db.query(models.Product).filter(models.Product.id == item_data.product_id).first()
     if not product:
         raise HTTPException(status_code=404, detail="Product not found.")
     if product.stock_quantity < item_data.quantity:
         raise HTTPException(status_code=400, detail="Not enough stock available.")
-
     cart = get_user_cart(db, current_user.id)
-
-    # 2. Check if the item is already in the cart. If so, just increase the quantity.
-    existing_item = db.query(models.CartItem).filter(
-        models.CartItem.cart_id == cart.id, 
-        models.CartItem.product_id == item_data.product_id
+    existing = db.query(models.CartItem).filter(
+        models.CartItem.cart_id == cart.id,
+        models.CartItem.product_id == item_data.product_id,
     ).first()
-
-    if existing_item:
-        existing_item.quantity += item_data.quantity
+    if existing:
+        existing.quantity += item_data.quantity
     else:
-        new_item = models.CartItem(cart_id=cart.id, product_id=item_data.product_id, quantity=item_data.quantity)
-        db.add(new_item)
-
+        db.add(models.CartItem(cart_id=cart.id, product_id=item_data.product_id, quantity=item_data.quantity))
     db.commit()
     db.refresh(cart)
-    
-    return view_cart(db, current_user) # Re-use the view function to return the updated total!
+    return _cart_response(db, current_user)
 
 
-# --- 3. REMOVE ITEM FROM CART ---
-@router.delete("/remove/{item_id}")
-def remove_from_cart(item_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+# ── UPDATE ITEM QUANTITY (by product_id) ──────────────────────────────────────
+@router.put("/update", response_model=schemas.CartResponse)
+def update_cart_item(
+    item_data: schemas.CartItemUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    """PUT /cart/update — used by API.cart.update(productId, quantity)"""
+    if item_data.quantity < 1:
+        raise HTTPException(status_code=400, detail="Quantity must be at least 1.")
     cart = get_user_cart(db, current_user.id)
-    
     item = db.query(models.CartItem).filter(
-        models.CartItem.id == item_id, 
-        models.CartItem.cart_id == cart.id # Ensure they only delete from their own cart!
+        models.CartItem.cart_id == cart.id,
+        models.CartItem.product_id == item_data.product_id,
     ).first()
-    
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found in cart.")
+    product = db.query(models.Product).filter(models.Product.id == item_data.product_id).first()
+    if product and product.stock_quantity < item_data.quantity:
+        raise HTTPException(status_code=400, detail="Not enough stock available.")
+    item.quantity = item_data.quantity
+    db.commit()
+    return _cart_response(db, current_user)
+
+
+# ── REMOVE BY ITEM ID (used by CartSidebar and Cart components directly) ──────
+@router.delete("/remove/{item_id}")
+def remove_from_cart(
+    item_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    cart = get_user_cart(db, current_user.id)
+    item = db.query(models.CartItem).filter(
+        models.CartItem.id == item_id,
+        models.CartItem.cart_id == cart.id,
+    ).first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found in your cart.")
-        
     db.delete(item)
     db.commit()
-    
     return {"status": "success", "message": "Item removed from cart."}
+
+
+# ── CLEAR ENTIRE CART ─────────────────────────────────────────────────────────
+@router.delete("/clear")
+def clear_cart(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    """DELETE /cart/clear — called by CheckoutPage after order is placed."""
+    cart = get_user_cart(db, current_user.id)
+    db.query(models.CartItem).filter(models.CartItem.cart_id == cart.id).delete()
+    db.commit()
+    return {"status": "success", "message": "Cart cleared."}
