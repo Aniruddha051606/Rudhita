@@ -1,0 +1,37 @@
+.card {
+  background: var(--cream);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  transition: all var(--duration-base) var(--ease);
+}
+
+.card-default {
+  background: var(--cream);
+}
+
+.card-elevated {
+  box-shadow: var(--shadow-md);
+}
+
+.card-elevated:hover {
+  box-shadow: var(--shadow-lg);
+}
+
+.card-bordered {
+  border: 1px solid rgba(24, 16, 12, 0.1);
+}
+
+.card-header {
+  padding: var(--spacing-lg);
+  border-bottom: 1px solid rgba(24, 16, 12, 0.05);
+}
+
+.card-content {
+  padding: var(--spacing-lg);
+}
+
+.card-footer {
+  padding: var(--spacing-lg);
+  border-top: 1px solid rgba(24, 16, 12, 0.05);
+  background: rgba(24, 16, 12, 0.02);
+}
