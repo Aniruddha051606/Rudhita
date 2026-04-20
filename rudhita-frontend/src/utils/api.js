@@ -1,6 +1,6 @@
 // src/utils/api.js
 
-const BASE_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8080";
+const BASE_URL = import.meta.env.VITE_API_URL || "https://rudhita-1.onrender.com";
 
 export class APIError extends Error {
   constructor(message, status, data) {
