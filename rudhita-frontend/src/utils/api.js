@@ -12,7 +12,12 @@ export class APIError extends Error {
 }
 
 /**
- * Central API request handler with error handling and token management
+ * Central API request handler with error handling and token management.
+ *
+ * DESIGN NOTE — Content-Type:
+ *   The default header is "application/json".
+ *   Individual callers (e.g. auth.login) can override it by passing
+ *   options.headers — because options.headers is spread LAST it always wins.
  */
 export const fetchAPI = async (endpoint, options = {}) => {
   const token = localStorage.getItem("rudhita_token");
@@ -20,7 +25,7 @@ export const fetchAPI = async (endpoint, options = {}) => {
   const headers = {
     "Content-Type": "application/json",
     ...(token && { Authorization: `Bearer ${token}` }),
-    ...options.headers,
+    ...options.headers,   // caller can override Content-Type here
   };
 
   try {
@@ -32,9 +37,10 @@ export const fetchAPI = async (endpoint, options = {}) => {
     const data = await response.json();
 
     if (!response.ok) {
-      // Handle 401 Unauthorized - clear token and redirect to login
+      // 401 → clear stale token and redirect to auth page
       if (response.status === 401) {
         localStorage.removeItem("rudhita_token");
+        localStorage.removeItem("rudhita_refresh_token");
         window.location.href = '/auth';
       }
 
@@ -59,19 +65,57 @@ export const fetchAPI = async (endpoint, options = {}) => {
 };
 
 /**
- * API endpoints collection for better organization
+ * API endpoints collection
  */
 export const API = {
-  // Auth endpoints
+  // ── Auth ──────────────────────────────────────────────────────────────────
   auth: {
-    register: (data) => fetchAPI('/auth/register', { method: 'POST', body: JSON.stringify(data) }),
-    login: (data) => fetchAPI('/auth/login', { method: 'POST', body: JSON.stringify(data) }),
-    verifyOTP: (data) => fetchAPI('/auth/verify-otp', { method: 'POST', body: JSON.stringify(data) }),
-    logout: () => fetchAPI('/auth/logout', { method: 'POST' }),
+    register: (data) =>
+      fetchAPI('/auth/register', { method: 'POST', body: JSON.stringify(data) }),
+
+    /**
+     * FIX: FastAPI's OAuth2PasswordRequestForm strictly requires
+     *      application/x-www-form-urlencoded with 'username' + 'password'.
+     *      Sending JSON returns HTTP 422 Unprocessable Entity every time.
+     */
+    login: (data) => {
+      const formData = new URLSearchParams();
+      // FastAPI OAuth2 spec mandates the field be called 'username'
+      formData.append('username', data.email || data.username);
+      formData.append('password', data.password);
+
+      return fetchAPI('/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: formData.toString(),
+      });
+    },
+
+    verifyOTP: (data) =>
+      fetchAPI('/auth/verify-otp', { method: 'POST', body: JSON.stringify(data) }),
+
+    /**
+     * FIX: Pass the refresh_token in the body so the backend can revoke BOTH
+     *      the access token (via JTI blocklist) and the refresh token in one call.
+     */
+    logout: () => {
+      const refreshToken = localStorage.getItem("rudhita_refresh_token");
+      return fetchAPI('/auth/logout', {
+        method: 'POST',
+        body: JSON.stringify(refreshToken ? { refresh_token: refreshToken } : {}),
+      });
+    },
+
+    refresh: (refreshToken) =>
+      fetchAPI('/auth/refresh', {
+        method: 'POST',
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      }),
+
     me: () => fetchAPI('/auth/me', { method: 'GET' }),
   },
 
-  // Products endpoints
+  // ── Products ──────────────────────────────────────────────────────────────
   products: {
     list: (params = {}) => {
       const query = new URLSearchParams(params).toString();
@@ -83,120 +127,109 @@ export const API = {
     byCategory: (category) => fetchAPI(`/products/category/${category}`),
   },
 
-  // Cart endpoints
+  // ── Cart ──────────────────────────────────────────────────────────────────
   cart: {
     get: () => fetchAPI('/cart/'),
-    add: (productId, quantity = 1) => fetchAPI('/cart/add', {
-      method: 'POST',
-      body: JSON.stringify({ product_id: productId, quantity }),
-    }),
-    update: (productId, quantity) => fetchAPI('/cart/update', {
-      method: 'PUT',
-      body: JSON.stringify({ product_id: productId, quantity }),
-    }),
-    remove: (productId) => fetchAPI('/cart/remove', {
-      method: 'DELETE',
-      body: JSON.stringify({ product_id: productId }),
-    }),
+    add: (productId, quantity = 1) =>
+      fetchAPI('/cart/add', {
+        method: 'POST',
+        body: JSON.stringify({ product_id: productId, quantity }),
+      }),
+    update: (productId, quantity) =>
+      fetchAPI('/cart/update', {
+        method: 'PUT',
+        body: JSON.stringify({ product_id: productId, quantity }),
+      }),
+    remove: (itemId) => fetchAPI(`/cart/remove/${itemId}`, { method: 'DELETE' }),
     clear: () => fetchAPI('/cart/clear', { method: 'DELETE' }),
   },
 
-  // Orders endpoints
+  // ── Orders ────────────────────────────────────────────────────────────────
   orders: {
     list: () => fetchAPI('/orders/'),
     get: (id) => fetchAPI(`/orders/${id}`),
-    create: (data) => fetchAPI('/orders/', { method: 'POST', body: JSON.stringify(data) }),
-    updateStatus: (id, status) => fetchAPI(`/orders/${id}/status`, {
-      method: 'PUT',
-      body: JSON.stringify({ status }),
-    }),
+    create: (data) =>
+      fetchAPI('/orders/', { method: 'POST', body: JSON.stringify(data) }),
+    confirmPayment: (orderId, paymentData) =>
+      fetchAPI(`/orders/${orderId}/confirm-payment`, {
+        method: 'POST',
+        body: JSON.stringify(paymentData),
+      }),
     track: (id) => fetchAPI(`/orders/${id}/track`),
+    cancel: (id) => fetchAPI(`/orders/${id}/cancel`, { method: 'POST' }),
   },
 
-  // User endpoints
+  // ── User ──────────────────────────────────────────────────────────────────
   user: {
     getProfile: () => fetchAPI('/user/profile'),
-    updateProfile: (data) => fetchAPI('/user/profile', {
-      method: 'PUT',
-      body: JSON.stringify(data),
-    }),
+    updateProfile: (data) =>
+      fetchAPI('/user/profile', { method: 'PUT', body: JSON.stringify(data) }),
     getAddresses: () => fetchAPI('/user/addresses'),
-    addAddress: (data) => fetchAPI('/user/addresses', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    }),
-    updateAddress: (id, data) => fetchAPI(`/user/addresses/${id}`, {
-      method: 'PUT',
-      body: JSON.stringify(data),
-    }),
-    deleteAddress: (id) => fetchAPI(`/user/addresses/${id}`, { method: 'DELETE' }),
+    addAddress: (data) =>
+      fetchAPI('/user/addresses', { method: 'POST', body: JSON.stringify(data) }),
+    updateAddress: (id, data) =>
+      fetchAPI(`/user/addresses/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    deleteAddress: (id) =>
+      fetchAPI(`/user/addresses/${id}`, { method: 'DELETE' }),
   },
 
-  // Admin endpoints
+  // ── Admin ─────────────────────────────────────────────────────────────────
   admin: {
     dashboard: () => fetchAPI('/admin/dashboard'),
+    stats:     () => fetchAPI('/admin/stats'),
     products: {
-      list: () => fetchAPI('/admin/products'),
-      create: (data) => fetchAPI('/admin/products', { method: 'POST', body: JSON.stringify(data) }),
-      update: (id, data) => fetchAPI(`/admin/products/${id}`, {
-        method: 'PUT',
-        body: JSON.stringify(data),
-      }),
-      delete: (id) => fetchAPI(`/admin/products/${id}`, { method: 'DELETE' }),
+      list:   ()          => fetchAPI('/admin/products'),
+      create: (data)      => fetchAPI('/admin/products', { method: 'POST', body: JSON.stringify(data) }),
+      update: (id, data)  => fetchAPI(`/admin/products/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+      delete: (id)        => fetchAPI(`/admin/products/${id}`, { method: 'DELETE' }),
     },
     orders: {
-      list: () => fetchAPI('/admin/orders'),
-      update: (id, data) => fetchAPI(`/admin/orders/${id}`, {
-        method: 'PUT',
-        body: JSON.stringify(data),
-      }),
+      list:   ()         => fetchAPI('/admin/orders'),
+      update: (id, data) => fetchAPI(`/admin/orders/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     },
     users: {
-      list: () => fetchAPI('/admin/users'),
+      list:      ()   => fetchAPI('/admin/users'),
       makeAdmin: (id) => fetchAPI(`/admin/users/${id}/admin`, { method: 'POST' }),
     },
+    auditLog: () => fetchAPI('/admin/audit-log'),
   },
 };
 
-/**
- * Utility function to check if user is authenticated
- */
-export const isAuthenticated = () => {
-  return !!localStorage.getItem("rudhita_token");
-};
+// ── Auth utilities ────────────────────────────────────────────────────────────
+
+/** Returns true when an access token is present in localStorage. */
+export const isAuthenticated = () => !!localStorage.getItem("rudhita_token");
+
+/** Read the stored access token. */
+export const getAuthToken = () => localStorage.getItem("rudhita_token");
 
 /**
- * Utility function to get authentication token
+ * Persist both tokens that the login endpoint returns.
+ * Pass null / undefined to clear both (logout).
  */
-export const getAuthToken = () => {
-  return localStorage.getItem("rudhita_token");
-};
-
-/**
- * Utility function to set authentication token
- */
-export const setAuthToken = (token) => {
-  if (token) {
-    localStorage.setItem("rudhita_token", token);
+export const setAuthTokens = ({ access_token, refresh_token } = {}) => {
+  if (access_token) {
+    localStorage.setItem("rudhita_token", access_token);
   } else {
     localStorage.removeItem("rudhita_token");
   }
+  if (refresh_token) {
+    localStorage.setItem("rudhita_refresh_token", refresh_token);
+  } else {
+    localStorage.removeItem("rudhita_refresh_token");
+  }
 };
 
-/**
- * Utility function to handle API errors consistently
- */
+/** Clear both tokens (use on logout). */
+export const clearAuthTokens = () => {
+  localStorage.removeItem("rudhita_token");
+  localStorage.removeItem("rudhita_refresh_token");
+};
+
+/** Uniform error shape for UI consumers. */
 export const handleAPIError = (error) => {
   if (error instanceof APIError) {
-    return {
-      message: error.message,
-      status: error.status,
-      data: error.data,
-    };
+    return { message: error.message, status: error.status, data: error.data };
   }
-  return {
-    message: 'An unexpected error occurred',
-    status: 0,
-    data: null,
-  };
+  return { message: 'An unexpected error occurred', status: 0, data: null };
 };
