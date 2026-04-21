@@ -1,0 +1,1765 @@
+﻿===== D:\Rudhita\rudhita-backend\.env =====
+# Replace 192.168.X.X with the actual local IP of your Dell Optiplex
+DATABASE_URL=postgresql://rudhita_admin:Sanchuu%400516@itxsl-2401-4900-1c44-1413-1a03-73ff-fe14-ba8c.run.pinggy-free.link:40143/rudhita_db
+JWT_SECRET_KEY=ffeeb010faa30e388e793f6c6f1b0c5940cff29d5d23aad3a037d912eb2ff94c
+JWT_ALGORITHM=HS256
+ACCESS_TOKEN_EXPIRE_MINUTES=60
+ALLOWED_ORIGINS=https://rudhita-1.onrender.com
+RAZORPAY_KEY_ID=rzp_test_SefdXBknuwnwT1
+RAZORPAY_KEY_SECRET=O7arpKE4Oqf5J21EPLTHl2aX
+DELHIVERY_API_TOKEN=your_delhivery_token
+===== D:\Rudhita\rudhita-backend\admin.py =====
+import uuid
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import func as sqlfunc
+from typing import List, Optional
+
+import models
+import schemas
+from database import get_db
+from utils import get_current_user
+
+router = APIRouter(prefix="/admin", tags=["Admin / Seller Dashboard"])
+
+
+def require_admin(current_user: models.User = Depends(get_current_user)):
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required.")
+    return current_user
+
+
+# â”€â”€ 1. DASHBOARD â€” returns camelCase so frontend's dashboard.totalOrders works â”€
+@router.get("/dashboard")
+def get_dashboard(
+    db: Session = Depends(get_db),
+    _: models.User = Depends(require_admin),
+):
+    """GET /admin/dashboard â€” called by API.admin.dashboard()"""
+    total_orders   = db.query(sqlfunc.count(models.Order.id)).scalar()
+    total_revenue  = db.query(sqlfunc.coalesce(sqlfunc.sum(models.Order.total_amount), 0.0)).filter(
+        models.Order.payment_status == "Paid"
+    ).scalar()
+    total_products = db.query(sqlfunc.count(models.Product.id)).filter(models.Product.is_active == True).scalar()
+
+    recent_orders = (
+        db.query(models.Order)
+        .options(joinedload(models.Order.owner))
+        .order_by(models.Order.created_at.desc())
+        .limit(10).all()
+    )
+
+    return {
+        "totalOrders": total_orders,
+        "totalRevenue": float(total_revenue),
+        "totalProducts": total_products,
+        "recentOrders": [
+            {
+                "id": o.id,
+                "customer_name": o.owner.name if o.owner else "N/A",
+                "total": o.total_amount,
+                "status": o.shipping_status.lower(),
+                "created_at": o.created_at.isoformat(),
+            }
+            for o in recent_orders
+        ],
+    }
+
+
+# â”€â”€ 2. STATS (original endpoint kept) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+@router.get("/stats", response_model=schemas.DashboardStats)
+def get_stats(db: Session = Depends(get_db), _: models.User = Depends(require_admin)):
+    return schemas.DashboardStats(
+        total_orders=db.query(sqlfunc.count(models.Order.id)).scalar(),
+        pending_orders=db.query(sqlfunc.count(models.Order.id)).filter(models.Order.shipping_status == "Pending").scalar(),
+        shipped_orders=db.query(sqlfunc.count(models.Order.id)).filter(models.Order.shipping_status == "Shipped").scalar(),
+        delivered_orders=db.query(sqlfunc.count(models.Order.id)).filter(models.Order.shipping_status == "Delivered").scalar(),
+        total_revenue=float(db.query(sqlfunc.coalesce(sqlfunc.sum(models.Order.total_amount), 0.0)).filter(models.Order.payment_status == "Paid").scalar()),
+        total_products=db.query(sqlfunc.count(models.Product.id)).filter(models.Product.is_active == True).scalar(),
+        low_stock_products=db.query(sqlfunc.count(models.Product.id)).filter(models.Product.stock_quantity < 10, models.Product.is_active == True).scalar(),
+        total_users=db.query(sqlfunc.count(models.User.id)).filter(models.User.is_verified == 1).scalar(),
+    )
+
+
+# â”€â”€ 3. PRODUCTS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+@router.get("/products")
+def admin_list_products(
+    skip: int = 0, limit: int = 50,
+    category: str = None, low_stock_only: bool = False,
+    db: Session = Depends(get_db), _: models.User = Depends(require_admin),
+):
+    """Returns {products: [...]} â€” frontend reads prodData.products"""
+    q = db.query(models.Product)
+    if category:
+        q = q.filter(models.Product.category == category)
+    if low_stock_only:
+        q = q.filter(models.Product.stock_quantity < 10)
+    products = q.order_by(models.Product.created_at.desc()).offset(skip).limit(limit).all()
+
+    def _resp(p):
+        pr = schemas.ProductResponse.model_validate(p)
+        if p.original_price and p.original_price > p.price:
+            pr.discount_percent = int((1 - p.price / p.original_price) * 100)
+        return pr
+
+    return {"products": [_resp(p) for p in products]}
+
+
+@router.post("/products", response_model=schemas.ProductResponse, status_code=201)
+def admin_create_product(
+    data: schemas.ProductAdminCreate,
+    db: Session = Depends(get_db),
+    _: models.User = Depends(require_admin),
+):
+    """POST /admin/products â€” called by admin form (no SKU field, auto-generated)."""
+    sku = data.sku or f"RUD-{uuid.uuid4().hex[:8].upper()}"
+    if db.query(models.Product).filter(models.Product.sku == sku).first():
+        sku = f"RUD-{uuid.uuid4().hex[:8].upper()}"
+    product = models.Product(
+        sku=sku, name=data.name, description=data.description,
+        category=data.category, price=data.price,
+        original_price=data.original_price,
+        stock_quantity=data.stock_quantity, weight_grams=data.weight_grams,
+        image_url=data.image_url,
+    )
+    db.add(product)
+    db.commit()
+    pr = schemas.ProductResponse.model_validate(product)
+    if product.original_price and product.original_price > product.price:
+        pr.discount_percent = int((1 - product.price / product.original_price) * 100)
+    return pr
+
+
+@router.put("/products/{product_id}", response_model=schemas.ProductResponse)
+@router.patch("/products/{product_id}", response_model=schemas.ProductResponse)
+def admin_update_product(
+    product_id: int,
+    update: schemas.ProductUpdate,
+    db: Session = Depends(get_db),
+    _: models.User = Depends(require_admin),
+):
+    """Accepts both PUT and PATCH â€” frontend uses PUT."""
+    product = db.query(models.Product).filter(models.Product.id == product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found.")
+    for field, value in update.model_dump(exclude_unset=True).items():
+        setattr(product, field, value)
+    db.commit()
+    pr = schemas.ProductResponse.model_validate(product)
+    if product.original_price and product.original_price > product.price:
+        pr.discount_percent = int((1 - product.price / product.original_price) * 100)
+    return pr
+
+
+@router.delete("/products/{product_id}")
+def admin_delete_product(
+    product_id: int,
+    db: Session = Depends(get_db),
+    _: models.User = Depends(require_admin),
+):
+    product = db.query(models.Product).filter(models.Product.id == product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found.")
+    product.is_active = False   # soft delete
+    db.commit()
+    return {"status": "success", "message": f"Product '{product.name}' deactivated."}
+
+
+# â”€â”€ 4. ORDERS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+@router.get("/orders")
+def admin_list_orders(
+    skip: int = 0, limit: int = 30,
+    payment_status: str = None, shipping_status: str = None,
+    db: Session = Depends(get_db), _: models.User = Depends(require_admin),
+):
+    """Returns {orders: [...]} â€” frontend reads ordersData.orders"""
+    q = (
+        db.query(models.Order)
+        .options(
+            joinedload(models.Order.items).joinedload(models.OrderItem.product),
+            joinedload(models.Order.tracking_events),
+            joinedload(models.Order.owner),
+        )
+        .order_by(models.Order.created_at.desc())
+    )
+    if payment_status:
+        q = q.filter(models.Order.payment_status == payment_status)
+    if shipping_status:
+        q = q.filter(models.Order.shipping_status == shipping_status)
+    orders = q.offset(skip).limit(limit).all()
+
+    return {
+        "orders": [
+            {
+                "id": o.id,
+                "customer_name": o.owner.name if o.owner else "N/A",
+                "total": o.total_amount,
+                "status": o.shipping_status.lower(),
+                "payment_status": o.payment_status,
+                "created_at": o.created_at.isoformat(),
+            }
+            for o in orders
+        ]
+    }
+
+
+@router.put("/orders/{order_id}")
+@router.patch("/orders/{order_id}/status")
+def admin_update_order(
+    order_id: int,
+    update: schemas.AdminOrderUpdate,
+    db: Session = Depends(get_db),
+    _: models.User = Depends(require_admin),
+):
+    """
+    Accepts both:
+      PUT /admin/orders/{id}  with body { status }   â† frontend sends this
+      PATCH /admin/orders/{id}/status                â† original route kept
+    """
+    valid = {"Pending","Processing","Shipped","Out for Delivery","Delivered","Cancelled","Return Initiated","Returned"}
+    # normalise: frontend sends lowercase
+    normalised = update.status.title()
+    if normalised not in valid:
+        raise HTTPException(status_code=400, detail=f"Invalid status. Choose: {', '.join(sorted(valid))}")
+    order = db.query(models.Order).filter(models.Order.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found.")
+    order.shipping_status = normalised
+    db.add(models.TrackingEvent(order_id=order.id, status=normalised))
+    db.commit()
+    return {"status": "success", "message": f"Order #{order_id} updated to '{normalised}'."}
+
+
+@router.patch("/orders/{order_id}/waybill")
+def set_waybill(order_id: int, waybill: str, db: Session = Depends(get_db), _: models.User = Depends(require_admin)):
+    order = db.query(models.Order).filter(models.Order.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found.")
+    order.delhivery_waybill = waybill
+    order.shipping_status = "Shipped"
+    db.add(models.TrackingEvent(order_id=order.id, status="Shipped",
+                                description=f"Dispatched via Delhivery. Waybill: {waybill}"))
+    db.commit()
+    return {"status": "success", "waybill": waybill}
+
+
+# â”€â”€ 5. USERS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+@router.get("/users")
+def admin_list_users(
+    skip: int = 0, limit: int = 50,
+    db: Session = Depends(get_db),
+    _: models.User = Depends(require_admin),
+):
+    """GET /admin/users â€” called by API.admin.users.list()"""
+    users = db.query(models.User).order_by(models.User.created_at.desc()).offset(skip).limit(limit).all()
+    return {
+        "users": [
+            {
+                "id": u.id, "name": u.name, "email": u.email,
+                "phone": u.phone, "is_verified": u.is_verified,
+                "is_admin": u.is_admin,
+                "created_at": u.created_at.isoformat() if u.created_at else None,
+            }
+            for u in users
+        ]
+    }
+
+
+@router.post("/users/{user_id}/admin")
+@router.patch("/users/{user_id}/make-admin")
+def make_admin(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_admin),
+):
+    """
+    Accepts both:
+      POST  /admin/users/{id}/admin      â† frontend (API.admin.users.makeAdmin)
+      PATCH /admin/users/{id}/make-admin â† original
+    """
+    if current_user.id == user_id:
+        raise HTTPException(status_code=400, detail="Cannot modify your own admin status.")
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    user.is_admin = True
+    db.commit()
+    return {"status": "success", "message": f"{user.name} is now an admin."}
+
+
+# â”€â”€ 6. LOW STOCK ALERTS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+@router.get("/alerts/low-stock", response_model=List[schemas.ProductStockAlert])
+def low_stock_alerts(
+    threshold: int = 10,
+    db: Session = Depends(get_db),
+    _: models.User = Depends(require_admin),
+):
+    return (
+        db.query(models.Product)
+        .filter(models.Product.stock_quantity <= threshold, models.Product.is_active == True)
+        .order_by(models.Product.stock_quantity.asc())
+        .all()
+    )
+===== D:\Rudhita\rudhita-backend\auth.py =====
+import secrets
+from datetime import datetime, timedelta, timezone
+
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+from sqlalchemy.orm import Session
+from fastapi.security import OAuth2PasswordRequestForm
+import models
+import schemas
+import utils
+from database import get_db
+
+router = APIRouter(prefix="/auth", tags=["Authentication"])
+limiter = Limiter(key_func=get_remote_address)
+
+
+def _generate_otp(db: Session, email: str) -> str:
+    db.query(models.OTP).filter(models.OTP.email == email).delete()
+    otp_code = str(secrets.randbelow(900_000) + 100_000)
+    expiry = datetime.now(timezone.utc) + timedelta(minutes=10)
+    db.add(models.OTP(email=email, otp_code=otp_code, expires_at=expiry))
+    db.commit()
+    return otp_code
+
+
+@router.post("/register", response_model=schemas.UserResponse, status_code=status.HTTP_201_CREATED)
+@limiter.limit("3/hour")
+def register_user(request: Request, user: schemas.UserCreate, db: Session = Depends(get_db)):
+    existing = db.query(models.User).filter(models.User.email == user.email).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Email already registered.")
+    new_user = models.User(
+        name=user.name, email=user.email,
+        password_hash=utils.hash_password(user.password),
+        phone=user.phone, is_verified=0,
+    )
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    otp_code = _generate_otp(db, user.email)
+    print("\n" + "=" * 40)
+    print(f"ðŸ“§ MOCK EMAIL TO: {user.email}")
+    print(f"   Subject: Your Rudhita Verification Code")
+    print(f"   Code: {otp_code}")
+    print("=" * 40 + "\n")
+    return new_user
+
+
+@router.post("/verify-otp")
+@limiter.limit("10/hour")
+def verify_otp(request: Request, otp_data: schemas.OTPVerify, db: Session = Depends(get_db)):
+    record = db.query(models.OTP).filter(
+        models.OTP.email == otp_data.email,
+        models.OTP.otp_code == otp_data.otp,
+    ).first()
+    if not record:
+        raise HTTPException(status_code=400, detail="Invalid or expired OTP.")
+    if record.expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
+        db.delete(record)
+        db.commit()
+        raise HTTPException(status_code=400, detail="Invalid or expired OTP.")
+    user = db.query(models.User).filter(models.User.email == otp_data.email).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    user.is_verified = 1
+    db.delete(record)
+    db.commit()
+    return {"status": "success", "message": "Account successfully verified!"}
+
+
+@router.post("/resend-otp")
+@limiter.limit("5/hour")
+def resend_otp(request: Request, data: schemas.ResendOTP, db: Session = Depends(get_db)):
+    user = db.query(models.User).filter(models.User.email == data.email).first()
+    if not user or user.is_verified == 1:
+        return {"status": "success", "message": "If this email is registered and unverified, a new code has been sent."}
+    otp_code = _generate_otp(db, data.email)
+    print("\n" + "=" * 40)
+    print(f"ðŸ“§ MOCK RESEND TO: {data.email}")
+    print(f"   Code: {otp_code}")
+    print("=" * 40 + "\n")
+    return {"status": "success", "message": "If this email is registered and unverified, a new code has been sent."}
+
+
+@router.post("/login", response_model=schemas.Token)
+@limiter.limit("5/minute")
+def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    user = db.query(models.User).filter(models.User.email == form_data.username).first()
+    invalid = HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid credentials.")
+    if not user or not utils.verify_password(form_data.password, user.password_hash):
+        raise invalid
+    if user.is_verified == 0:
+        raise invalid
+    access_token = utils.create_access_token(data={"sub": user.email, "id": user.id})
+    return {"access_token": access_token, "token_type": "bearer"}
+
+
+@router.get("/me", response_model=schemas.UserResponse)
+def get_me(current_user: models.User = Depends(utils.get_current_user)):
+    """Returns the currently logged-in user. Used by API.auth.me()."""
+    return current_user
+
+
+@router.post("/logout")
+def logout():
+    """Token-based auth is stateless â€” logout is handled client-side by removing the token."""
+    return {"status": "success", "message": "Logged out successfully."}
+===== D:\Rudhita\rudhita-backend\cart.py =====
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+from typing import Optional
+
+import models, schemas
+from database import get_db
+from utils import get_current_user
+
+router = APIRouter(prefix="/cart", tags=["Shopping Cart"])
+
+
+def get_user_cart(db: Session, user_id: int) -> models.Cart:
+    cart = db.query(models.Cart).filter(models.Cart.user_id == user_id).first()
+    if not cart:
+        cart = models.Cart(user_id=user_id)
+        db.add(cart)
+        db.commit()
+        db.refresh(cart)
+    return cart
+
+
+def _cart_response(db: Session, user) -> schemas.CartResponse:
+    cart = get_user_cart(db, user.id)
+    total = sum(item.product.price * item.quantity for item in cart.items)
+    cr = schemas.CartResponse.model_validate(cart)
+    cr.cart_total = total
+    return cr
+
+
+# â”€â”€ GET CART â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+@router.get("/", response_model=schemas.CartResponse)
+def view_cart(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    return _cart_response(db, current_user)
+
+
+# â”€â”€ ADD ITEM â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+@router.post("/add", response_model=schemas.CartResponse)
+def add_to_cart(
+    item_data: schemas.CartItemAdd,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    product = db.query(models.Product).filter(models.Product.id == item_data.product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found.")
+    if product.stock_quantity < item_data.quantity:
+        raise HTTPException(status_code=400, detail="Not enough stock available.")
+    cart = get_user_cart(db, current_user.id)
+    existing = db.query(models.CartItem).filter(
+        models.CartItem.cart_id == cart.id,
+        models.CartItem.product_id == item_data.product_id,
+    ).first()
+    if existing:
+        existing.quantity += item_data.quantity
+    else:
+        db.add(models.CartItem(cart_id=cart.id, product_id=item_data.product_id, quantity=item_data.quantity))
+    db.commit()
+    db.refresh(cart)
+    return _cart_response(db, current_user)
+
+
+# â”€â”€ UPDATE ITEM QUANTITY (by product_id) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+@router.put("/update", response_model=schemas.CartResponse)
+def update_cart_item(
+    item_data: schemas.CartItemUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    """PUT /cart/update â€” used by API.cart.update(productId, quantity)"""
+    if item_data.quantity < 1:
+        raise HTTPException(status_code=400, detail="Quantity must be at least 1.")
+    cart = get_user_cart(db, current_user.id)
+    item = db.query(models.CartItem).filter(
+        models.CartItem.cart_id == cart.id,
+        models.CartItem.product_id == item_data.product_id,
+    ).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found in cart.")
+    product = db.query(models.Product).filter(models.Product.id == item_data.product_id).first()
+    if product and product.stock_quantity < item_data.quantity:
+        raise HTTPException(status_code=400, detail="Not enough stock available.")
+    item.quantity = item_data.quantity
+    db.commit()
+    return _cart_response(db, current_user)
+
+
+# â”€â”€ REMOVE BY ITEM ID (used by CartSidebar and Cart components directly) â”€â”€â”€â”€â”€â”€
+@router.delete("/remove/{item_id}")
+def remove_from_cart(
+    item_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    cart = get_user_cart(db, current_user.id)
+    item = db.query(models.CartItem).filter(
+        models.CartItem.id == item_id,
+        models.CartItem.cart_id == cart.id,
+    ).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found in your cart.")
+    db.delete(item)
+    db.commit()
+    return {"status": "success", "message": "Item removed from cart."}
+
+
+# â”€â”€ CLEAR ENTIRE CART â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+@router.delete("/clear")
+def clear_cart(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    """DELETE /cart/clear â€” called by CheckoutPage after order is placed."""
+    cart = get_user_cart(db, current_user.id)
+    db.query(models.CartItem).filter(models.CartItem.cart_id == cart.id).delete()
+    db.commit()
+    return {"status": "success", "message": "Cart cleared."}
+===== D:\Rudhita\rudhita-backend\database.py =====
+import os
+from sqlalchemy import create_engine
+from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.pool import QueuePool
+from dotenv import load_dotenv
+
+load_dotenv()
+
+SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL")
+
+if not SQLALCHEMY_DATABASE_URL:
+    raise ValueError(
+        "DATABASE_URL is not set. "
+        "Add it to your .env file: DATABASE_URL=postgresql://user:pass@host/dbname"
+    )
+
+# â”€â”€ High-performance connection pool â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# pool_size=10      â†’ 10 persistent connections kept alive at all times
+# max_overflow=20   â†’ up to 20 extra connections under burst traffic
+# pool_pre_ping=True â†’ validates connections before use (handles stale TCP)
+# pool_recycle=1800  â†’ recycles connections every 30 min (prevents timeouts)
+engine = create_engine(
+    SQLALCHEMY_DATABASE_URL,
+    poolclass=QueuePool,
+    pool_size=10,
+    max_overflow=20,
+    pool_pre_ping=True,
+    pool_recycle=1800,
+    connect_args={"options": "-c timezone=utc"},
+)
+
+SessionLocal = sessionmaker(
+    autocommit=False,
+    autoflush=False,
+    bind=engine,
+    # expire_on_commit=False â†’ objects stay usable after commit without
+    # a second round-trip to the DB to re-fetch them
+    expire_on_commit=False,
+)
+
+Base = declarative_base()
+
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+===== D:\Rudhita\rudhita-backend\main.py =====
+import os
+from fastapi import FastAPI, Depends, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from sqlalchemy.orm import Session
+from sqlalchemy import text
+
+from database import engine, get_db
+import models
+from auth import router as auth_router
+from products import router as products_router
+from cart import router as cart_router
+from orders import router as orders_router
+from admin import router as admin_router
+from user import router as user_router          # â† NEW
+
+# â”€â”€ Auto-create all tables (safe to run on every startup) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+models.Base.metadata.create_all(bind=engine)
+
+# â”€â”€ Rate limiter â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+limiter = Limiter(key_func=get_remote_address)
+
+app = FastAPI(
+    title="Rudhita E-Commerce API",
+    description="High-performance backend for Rudhita â€” clothing, jewellery & lifestyle.",
+    version="2.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+)
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# â”€â”€ CORS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+_raw_origins = os.getenv("ALLOWED_ORIGINS", "")
+allowed_origins = [o.strip() for o in _raw_origins.split(",") if o.strip()]
+if not allowed_origins:
+    allowed_origins = ["http://localhost:3000", "http://127.0.0.1:5500"]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# â”€â”€ Routers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+app.include_router(auth_router)
+app.include_router(products_router)
+app.include_router(cart_router)
+app.include_router(orders_router)
+app.include_router(admin_router)
+app.include_router(user_router)                 # â† NEW
+
+# â”€â”€ Health check â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+@app.get("/", tags=["Health"])
+def health_check(db: Session = Depends(get_db)):
+    # Pings the DB â€” if this returns 200, everything is operational
+    db.execute(text("SELECT 1"))
+    return {
+        "status": "online",
+        "service": "Rudhita API v2.0",
+        "db": "connected",
+    }
+
+
+# â”€â”€ DB pool stats (useful for monitoring) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+@app.get("/health/pool", tags=["Health"])
+def pool_stats():
+    pool = engine.pool
+    return {
+        "pool_size": pool.size(),
+        "checked_in": pool.checkedin(),
+        "checked_out": pool.checkedout(),
+        "overflow": pool.overflow(),
+    }
+===== D:\Rudhita\rudhita-backend\make_admin.py =====
+===== D:\Rudhita\rudhita-backend\models.py =====
+from sqlalchemy import (
+    Column, Integer, String, Float, ForeignKey,
+    DateTime, Text, Boolean, Index
+)
+from sqlalchemy.orm import relationship
+from sqlalchemy.sql import func
+from database import Base
+
+
+class User(Base):
+    __tablename__ = "users"
+    id             = Column(Integer, primary_key=True, index=True)
+    name           = Column(String(100), nullable=False)
+    email          = Column(String(150), unique=True, nullable=False, index=True)
+    password_hash  = Column(String(255), nullable=True)
+    phone          = Column(String(20))
+    is_verified    = Column(Integer, default=0)
+    is_admin       = Column(Boolean, default=False)
+    created_at     = Column(DateTime(timezone=True), server_default=func.now())
+    orders         = relationship("Order", back_populates="owner", lazy="select")
+    cart           = relationship("Cart", back_populates="user", uselist=False)
+    addresses      = relationship("Address", back_populates="user", cascade="all, delete-orphan")
+
+
+class Address(Base):
+    __tablename__ = "addresses"
+    id           = Column(Integer, primary_key=True, index=True)
+    user_id      = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    name         = Column(String(150), nullable=False)   # "Home", "Office", or person's name
+    phone        = Column(String(20), nullable=False)
+    street       = Column(Text, nullable=False)
+    city         = Column(String(100), nullable=False)
+    state        = Column(String(100), nullable=False)
+    pincode      = Column(String(10), nullable=False)
+    is_default   = Column(Boolean, default=False)
+    created_at   = Column(DateTime(timezone=True), server_default=func.now())
+    user         = relationship("User", back_populates="addresses")
+
+
+class Product(Base):
+    __tablename__ = "products"
+    id             = Column(Integer, primary_key=True, index=True)
+    sku            = Column(String(50), unique=True, nullable=False, index=True)
+    name           = Column(String(200), nullable=False)
+    description    = Column(Text)
+    category       = Column(String(100), index=True)
+    price          = Column(Float, nullable=False)
+    original_price = Column(Float)
+    stock_quantity = Column(Integer, default=0, nullable=False)
+    weight_grams   = Column(Integer, default=0, nullable=False)
+    image_url      = Column(String(500))
+    is_active      = Column(Boolean, default=True)
+    created_at     = Column(DateTime(timezone=True), server_default=func.now())
+    __table_args__ = (Index("ix_products_category_price", "category", "price"),)
+
+
+class Order(Base):
+    __tablename__ = "orders"
+    id                  = Column(Integer, primary_key=True, index=True)
+    user_id             = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    total_amount        = Column(Float, nullable=False)
+    payment_status      = Column(String(50), default="Pending", index=True)
+    shipping_status     = Column(String(50), default="Pending", index=True)
+    razorpay_order_id   = Column(String(100), index=True)
+    razorpay_payment_id = Column(String(100))
+    delhivery_waybill   = Column(String(100), index=True)
+    shipping_address    = Column(Text, nullable=False)
+    created_at          = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at          = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    owner           = relationship("User", back_populates="orders")
+    items           = relationship("OrderItem", back_populates="order", cascade="all, delete-orphan")
+    tracking_events = relationship("TrackingEvent", back_populates="order",
+                                   order_by="TrackingEvent.created_at", cascade="all, delete-orphan")
+
+
+class OrderItem(Base):
+    __tablename__ = "order_items"
+    id                = Column(Integer, primary_key=True, index=True)
+    order_id          = Column(Integer, ForeignKey("orders.id"), nullable=False, index=True)
+    product_id        = Column(Integer, ForeignKey("products.id"), nullable=False)
+    quantity          = Column(Integer, nullable=False, default=1)
+    price_at_purchase = Column(Float, nullable=False)
+    order   = relationship("Order", back_populates="items")
+    product = relationship("Product")
+
+
+class TrackingEvent(Base):
+    __tablename__ = "tracking_events"
+    id          = Column(Integer, primary_key=True, index=True)
+    order_id    = Column(Integer, ForeignKey("orders.id"), nullable=False, index=True)
+    status      = Column(String(100), nullable=False)
+    location    = Column(String(200))
+    description = Column(Text)
+    created_at  = Column(DateTime(timezone=True), server_default=func.now())
+    order = relationship("Order", back_populates="tracking_events")
+
+
+class OTP(Base):
+    __tablename__ = "otps"
+    id         = Column(Integer, primary_key=True, index=True)
+    email      = Column(String(150), nullable=False, index=True)
+    otp_code   = Column(String(6), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+
+
+class Cart(Base):
+    __tablename__ = "carts"
+    id         = Column(Integer, primary_key=True, index=True)
+    user_id    = Column(Integer, ForeignKey("users.id"), unique=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    user  = relationship("User", back_populates="cart")
+    items = relationship("CartItem", back_populates="cart", cascade="all, delete-orphan")
+
+
+class CartItem(Base):
+    __tablename__ = "cart_items"
+    id         = Column(Integer, primary_key=True, index=True)
+    cart_id    = Column(Integer, ForeignKey("carts.id"), nullable=False)
+    product_id = Column(Integer, ForeignKey("products.id"), nullable=False)
+    quantity   = Column(Integer, default=1, nullable=False)
+    cart    = relationship("Cart", back_populates="items")
+    product = relationship("Product")
+===== D:\Rudhita\rudhita-backend\orders.py =====
+import os
+import razorpay
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
+from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import func as sqlfunc
+from typing import List
+
+import models
+import schemas
+from database import get_db
+from utils import get_current_user
+
+router = APIRouter(prefix="/orders", tags=["Orders"])
+
+
+def _get_razorpay():
+    key_id = os.getenv("RAZORPAY_KEY_ID")
+    key_secret = os.getenv("RAZORPAY_KEY_SECRET")
+    if not key_id or not key_secret:
+        raise HTTPException(status_code=503, detail="Payment gateway not configured.")
+    return razorpay.Client(auth=(key_id, key_secret))
+
+
+def _clear_cart(db: Session, user_id: int):
+    cart = db.query(models.Cart).filter(models.Cart.user_id == user_id).first()
+    if cart:
+        db.query(models.CartItem).filter(models.CartItem.cart_id == cart.id).delete()
+        db.commit()
+
+
+def _format_address(addr: schemas.CheckoutAddress) -> str:
+    return f"{addr.name}, {addr.phone}, {addr.street}, {addr.city}, {addr.state} - {addr.pincode}"
+
+
+# â”€â”€ 1. POST /orders/ â€” what CheckoutPage calls â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+@router.post("/", response_model=dict, status_code=201)
+def create_order_from_frontend(
+    order_data: schemas.FrontendOrderCreate,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    """
+    Called by CheckoutPage via API.orders.create().
+    Reads the cart, creates a Razorpay order, and saves everything to DB.
+    """
+    cart = (
+        db.query(models.Cart)
+        .options(joinedload(models.Cart.items).joinedload(models.CartItem.product))
+        .filter(models.Cart.user_id == current_user.id)
+        .first()
+    )
+    if not cart or not cart.items:
+        raise HTTPException(status_code=400, detail="Your cart is empty.")
+
+    total = 0.0
+    for item in cart.items:
+        if item.product.stock_quantity < item.quantity:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Insufficient stock for '{item.product.name}'."
+            )
+        total += item.product.price * item.quantity
+
+    shipping_address = _format_address(order_data.address)
+
+    rz = _get_razorpay()
+    rz_order = rz.order.create({
+        "amount": int(total * 100),
+        "currency": "INR",
+        "receipt": f"rudhita_user_{current_user.id}",
+    })
+
+    new_order = models.Order(
+        user_id=current_user.id,
+        total_amount=total,
+        shipping_address=shipping_address,
+        razorpay_order_id=rz_order["id"],
+        payment_status="Pending",
+        shipping_status="Pending",
+    )
+    db.add(new_order)
+    db.flush()
+
+    for item in cart.items:
+        db.add(models.OrderItem(
+            order_id=new_order.id,
+            product_id=item.product_id,
+            quantity=item.quantity,
+            price_at_purchase=item.product.price,
+        ))
+        item.product.stock_quantity -= item.quantity
+
+    db.add(models.TrackingEvent(
+        order_id=new_order.id,
+        status="Order Placed",
+        description="Your order has been received and is being processed.",
+    ))
+    db.commit()
+    background_tasks.add_task(_clear_cart, db, current_user.id)
+
+    return {
+        "order_id": new_order.id,
+        "razorpay_order_id": rz_order["id"],
+        "amount": total,
+        "currency": "INR",
+        "key_id": os.getenv("RAZORPAY_KEY_ID"),
+    }
+
+
+# â”€â”€ 2. POST /orders/checkout â€” legacy route kept for compatibility â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+@router.post("/checkout", response_model=dict, status_code=201)
+def checkout(
+    order_data: schemas.OrderCreate,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    cart = (
+        db.query(models.Cart)
+        .options(joinedload(models.Cart.items).joinedload(models.CartItem.product))
+        .filter(models.Cart.user_id == current_user.id)
+        .first()
+    )
+    if not cart or not cart.items:
+        raise HTTPException(status_code=400, detail="Your cart is empty.")
+    total = 0.0
+    for item in cart.items:
+        if item.product.stock_quantity < item.quantity:
+            raise HTTPException(status_code=400, detail=f"Insufficient stock for '{item.product.name}'.")
+        total += item.product.price * item.quantity
+    rz = _get_razorpay()
+    rz_order = rz.order.create({"amount": int(total * 100), "currency": "INR"})
+    new_order = models.Order(
+        user_id=current_user.id, total_amount=total,
+        shipping_address=order_data.shipping_address,
+        razorpay_order_id=rz_order["id"],
+        payment_status="Pending", shipping_status="Pending",
+    )
+    db.add(new_order)
+    db.flush()
+    for item in cart.items:
+        db.add(models.OrderItem(order_id=new_order.id, product_id=item.product_id,
+                                quantity=item.quantity, price_at_purchase=item.product.price))
+        item.product.stock_quantity -= item.quantity
+    db.add(models.TrackingEvent(order_id=new_order.id, status="Order Placed",
+                                description="Your order has been received."))
+    db.commit()
+    background_tasks.add_task(_clear_cart, db, current_user.id)
+    return {"order_id": new_order.id, "razorpay_order_id": rz_order["id"],
+            "amount": total, "currency": "INR", "key_id": os.getenv("RAZORPAY_KEY_ID")}
+
+
+# â”€â”€ 3. CONFIRM PAYMENT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+@router.post("/{order_id}/confirm-payment")
+def confirm_payment(
+    order_id: int,
+    payload: schemas.PaymentStatusUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    order = db.query(models.Order).filter(
+        models.Order.id == order_id, models.Order.user_id == current_user.id
+    ).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found.")
+    order.payment_status = payload.payment_status
+    if payload.razorpay_payment_id:
+        order.razorpay_payment_id = payload.razorpay_payment_id
+    if payload.payment_status == "Paid":
+        order.shipping_status = "Processing"
+        db.add(models.TrackingEvent(order_id=order.id, status="Payment Confirmed",
+                                    description="Payment received. Order being prepared."))
+    db.commit()
+    return {"status": "success", "message": f"Order #{order_id} payment updated."}
+
+
+# â”€â”€ 4. LIST MY ORDERS â€” returns {orders: [...]} so frontend's data.orders works
+@router.get("/", response_model=schemas.OrderListResponse)
+def list_my_orders(
+    skip: int = 0,
+    limit: int = 20,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    orders = (
+        db.query(models.Order)
+        .filter(models.Order.user_id == current_user.id)
+        .order_by(models.Order.created_at.desc())
+        .offset(skip).limit(limit).all()
+    )
+    result = []
+    for o in orders:
+        item_count = db.query(sqlfunc.count(models.OrderItem.id)).filter(
+            models.OrderItem.order_id == o.id
+        ).scalar()
+        result.append(schemas.OrderSummaryResponse(
+            id=o.id, total_amount=o.total_amount,
+            payment_status=o.payment_status, shipping_status=o.shipping_status,
+            item_count=item_count, created_at=o.created_at,
+        ))
+    return schemas.OrderListResponse(orders=result)
+
+
+# â”€â”€ 5. ORDER DETAIL â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+@router.get("/{order_id}", response_model=schemas.OrderResponse)
+def get_order(
+    order_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    order = (
+        db.query(models.Order)
+        .options(
+            joinedload(models.Order.items).joinedload(models.OrderItem.product),
+            joinedload(models.Order.tracking_events),
+        )
+        .filter(models.Order.id == order_id, models.Order.user_id == current_user.id)
+        .first()
+    )
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found.")
+    return order
+
+
+# â”€â”€ 6. TRACK ORDER â€” used by OrderTrackingPage â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+@router.get("/{order_id}/track", response_model=schemas.TrackingResponse)
+def track_order(
+    order_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    """GET /orders/{id}/track â€” called by API.orders.track(id)"""
+    order = db.query(models.Order).filter(
+        models.Order.id == order_id, models.Order.user_id == current_user.id
+    ).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found.")
+    events = (
+        db.query(models.TrackingEvent)
+        .filter(models.TrackingEvent.order_id == order_id)
+        .order_by(models.TrackingEvent.created_at.asc())
+        .all()
+    )
+    return schemas.TrackingResponse(
+        order_id=order.id,
+        shipping_status=order.shipping_status,
+        waybill=order.delhivery_waybill,
+        events=events,
+    )
+
+
+# â”€â”€ 7. CANCEL ORDER â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+@router.post("/{order_id}/cancel")
+def cancel_order(
+    order_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    order = db.query(models.Order).filter(
+        models.Order.id == order_id, models.Order.user_id == current_user.id
+    ).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found.")
+    if order.shipping_status not in ("Pending", "Processing"):
+        raise HTTPException(status_code=400,
+                            detail=f"Cannot cancel an order that is '{order.shipping_status}'.")
+    order.shipping_status = "Cancelled"
+    order.payment_status = "Refund Initiated" if order.payment_status == "Paid" else "Cancelled"
+    for item in order.items:
+        product = db.query(models.Product).filter(models.Product.id == item.product_id).first()
+        if product:
+            product.stock_quantity += item.quantity
+    db.add(models.TrackingEvent(order_id=order.id, status="Cancelled",
+                                description="Order cancelled by customer."))
+    db.commit()
+    return {"status": "success", "message": "Order cancelled and stock restored."}
+===== D:\Rudhita\rudhita-backend\products.py =====
+import uuid
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
+from typing import List, Optional
+
+import models
+import schemas
+from database import get_db
+from utils import get_current_user
+
+router = APIRouter(prefix="/products", tags=["Products"])
+
+
+def _build_response(p) -> schemas.ProductResponse:
+    pr = schemas.ProductResponse.model_validate(p)
+    if p.original_price and p.original_price > p.price:
+        pr.discount_percent = int((1 - p.price / p.original_price) * 100)
+    return pr
+
+
+# â”€â”€ 1. CREATE PRODUCT (admin only) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+@router.post("/", response_model=schemas.ProductResponse, status_code=201)
+def create_product(
+    product: schemas.ProductCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required.")
+    if db.query(models.Product).filter(models.Product.sku == product.sku).first():
+        raise HTTPException(status_code=400, detail="A product with this SKU already exists.")
+    new_product = models.Product(**product.model_dump())
+    db.add(new_product)
+    db.commit()
+    return _build_response(new_product)
+
+
+# â”€â”€ 2. CATALOG â€” returns {products: [...]} so frontend's data.products works â”€
+@router.get("/", response_model=schemas.ProductListResponse)
+def get_products(
+    skip: int = 0,
+    limit: int = 40,
+    category: Optional[str] = None,
+    search: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    q = db.query(models.Product).filter(models.Product.is_active == True)
+    if category:
+        q = q.filter(models.Product.category == category)
+    if search:
+        q = q.filter(
+            models.Product.name.ilike(f"%{search}%") |
+            models.Product.description.ilike(f"%{search}%")
+        )
+    products = q.order_by(models.Product.created_at.desc()).offset(skip).limit(limit).all()
+    return schemas.ProductListResponse(products=[_build_response(p) for p in products])
+
+
+# â”€â”€ 3. FEATURED â€” must be BEFORE /{product_id} â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+@router.get("/featured", response_model=List[schemas.ProductResponse])
+def get_featured_products(limit: int = 8, db: Session = Depends(get_db)):
+    products = (
+        db.query(models.Product)
+        .filter(models.Product.is_active == True)
+        .order_by(
+            (models.Product.original_price > models.Product.price).desc(),
+            models.Product.created_at.desc(),
+        )
+        .limit(limit).all()
+    )
+    return [_build_response(p) for p in products]
+
+
+# â”€â”€ 4. SEARCH â€” alias for ?search= so api.js products.search() works â”€â”€â”€â”€â”€â”€â”€â”€â”€
+@router.get("/search", response_model=schemas.ProductListResponse)
+def search_products(q: str = "", db: Session = Depends(get_db)):
+    """GET /products/search?q=silk â€” used by API.products.search()"""
+    products = (
+        db.query(models.Product)
+        .filter(
+            models.Product.is_active == True,
+            models.Product.name.ilike(f"%{q}%") |
+            models.Product.description.ilike(f"%{q}%"),
+        )
+        .order_by(models.Product.created_at.desc())
+        .limit(40).all()
+    )
+    return schemas.ProductListResponse(products=[_build_response(p) for p in products])
+
+
+# â”€â”€ 5. BY CATEGORY â€” alias for ?category= â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+@router.get("/category/{category}", response_model=schemas.ProductListResponse)
+def get_by_category(category: str, db: Session = Depends(get_db)):
+    """GET /products/category/Apparel â€” used by API.products.byCategory()"""
+    products = (
+        db.query(models.Product)
+        .filter(models.Product.is_active == True, models.Product.category == category)
+        .order_by(models.Product.created_at.desc())
+        .all()
+    )
+    return schemas.ProductListResponse(products=[_build_response(p) for p in products])
+
+
+# â”€â”€ 6. SINGLE PRODUCT â€” must be LAST so it doesn't swallow named routes â”€â”€â”€â”€â”€â”€
+@router.get("/{product_id}", response_model=schemas.ProductResponse)
+def get_product(product_id: int, db: Session = Depends(get_db)):
+    product = db.query(models.Product).filter(
+        models.Product.id == product_id, models.Product.is_active == True,
+    ).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found.")
+    return _build_response(product)
+===== D:\Rudhita\rudhita-backend\README.md =====
+# Rudhita
+===== D:\Rudhita\rudhita-backend\requirements.txt =====
+annotated-doc==0.0.4
+annotated-types==0.7.0
+anyio==4.13.0
+bcrypt==3.2.2
+certifi==2026.2.25
+cffi==2.0.0
+charset-normalizer==3.4.7
+click==8.3.2
+colorama==0.4.6
+Deprecated==1.3.1
+dnspython==2.8.0
+email-validator==2.3.0
+fastapi==0.136.0
+greenlet==3.4.0
+h11==0.16.0
+httpcore==1.0.9
+httpx==0.28.1
+idna==3.11
+limits==5.8.0
+packaging==26.1
+passlib==1.7.4
+psycopg2-binary==2.9.11
+pycparser==3.0
+pydantic==2.13.2
+pydantic_core==2.46.2
+PyJWT==2.12.1
+python-dotenv==1.2.2
+python-multipart==0.0.26
+razorpay==2.0.1
+requests==2.33.1
+slowapi==0.1.9
+SQLAlchemy==2.0.49
+starlette==1.0.0
+typing-inspection==0.4.2
+typing_extensions==4.15.0
+urllib3==2.6.3
+uvicorn==0.44.0
+wrapt==2.1.2
+===== D:\Rudhita\rudhita-backend\reset_db.py =====
+import models
+from database import engine
+from sqlalchemy import text
+
+print("Dropping all tables...")
+with engine.connect() as conn:
+    conn.execute(text("DROP SCHEMA public CASCADE;"))
+    conn.execute(text("CREATE SCHEMA public;"))
+    conn.execute(text("GRANT ALL ON SCHEMA public TO postgres;"))
+    conn.execute(text("GRANT ALL ON SCHEMA public TO public;"))
+    # Grant back to your dedicated user
+    conn.execute(text("GRANT ALL ON SCHEMA public TO rudhita_admin;"))
+    conn.execute(text("ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO rudhita_admin;"))
+    conn.execute(text("ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO rudhita_admin;"))
+    conn.commit()
+
+print("Rebuilding schema from models.py...")
+models.Base.metadata.create_all(bind=engine)
+
+print("\nâœ… Done. Tables created:")
+with engine.connect() as conn:
+    result = conn.execute(text(
+        "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename"
+    ))
+    for row in result:
+        print(f"  â€¢ {row[0]}")
+===== D:\Rudhita\rudhita-backend\schemas.py =====
+from pydantic import BaseModel, EmailStr, Field, ConfigDict
+from typing import Optional, List
+from datetime import datetime
+
+
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# AUTH
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+class UserCreate(BaseModel):
+    name: str
+    email: EmailStr
+    password: str
+    phone: Optional[str] = None
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+class OTPVerify(BaseModel):
+    email: EmailStr
+    otp: str
+
+class ResendOTP(BaseModel):
+    email: EmailStr
+
+class UserResponse(BaseModel):
+    id: int
+    name: str
+    email: EmailStr
+    phone: Optional[str] = None
+    is_verified: int
+    is_admin: bool
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+class UserProfileUpdate(BaseModel):
+    name: Optional[str] = None
+    phone: Optional[str] = None
+    password: Optional[str] = None   # handled in the route, not stored directly
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ADDRESS  â€” field names match what the frontend sends
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+class AddressCreate(BaseModel):
+    # Frontend sends camelCase `isDefault`; populate_by_name lets us use either form
+    model_config = ConfigDict(populate_by_name=True)
+    name: str
+    phone: str
+    street: str
+    city: str
+    state: str
+    pincode: str
+    is_default: bool = Field(default=False, alias="isDefault")
+
+class AddressUpdate(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    name: Optional[str] = None
+    phone: Optional[str] = None
+    street: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    pincode: Optional[str] = None
+    is_default: Optional[bool] = Field(default=None, alias="isDefault")
+
+class AddressResponse(BaseModel):
+    id: int
+    name: str
+    phone: str
+    street: str
+    city: str
+    state: str
+    pincode: str
+    is_default: bool = Field(serialization_alias="isDefault")   # respond with isDefault so frontend can read a.isDefault
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# PRODUCT
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+class ProductBase(BaseModel):
+    sku: str
+    name: str
+    description: Optional[str] = None
+    category: Optional[str] = None
+    price: float
+    original_price: Optional[float] = None
+    stock_quantity: int = 0
+    weight_grams: int = 0
+    image_url: Optional[str] = None
+
+class ProductCreate(ProductBase):
+    pass
+
+class ProductAdminCreate(BaseModel):
+    """Used by the admin form â€” SKU is auto-generated if not supplied."""
+    name: str
+    description: Optional[str] = None
+    category: str
+    price: float
+    original_price: Optional[float] = Field(default=None, alias="originalPrice")
+    stock_quantity: int = Field(default=0, alias="stock")
+    weight_grams: int = 0
+    image_url: Optional[str] = None
+    sku: Optional[str] = None            # auto-generated if omitted
+    model_config = ConfigDict(populate_by_name=True)
+
+class ProductUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    category: Optional[str] = None
+    price: Optional[float] = None
+    original_price: Optional[float] = None
+    stock_quantity: Optional[int] = None
+    weight_grams: Optional[int] = None
+    image_url: Optional[str] = None
+    is_active: Optional[bool] = None
+
+class ProductResponse(ProductBase):
+    id: int
+    is_active: bool
+    created_at: datetime
+    discount_percent: Optional[int] = None
+    model_config = ConfigDict(from_attributes=True)
+
+class ProductListResponse(BaseModel):
+    """Wraps the product list â€” frontend reads `data.products`."""
+    products: List[ProductResponse]
+
+
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# CART
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+class CartItemAdd(BaseModel):
+    product_id: int
+    quantity: int = 1
+
+class CartItemUpdate(BaseModel):
+    product_id: int
+    quantity: int
+
+class CartItemResponse(BaseModel):
+    id: int
+    quantity: int
+    product: ProductResponse
+    model_config = ConfigDict(from_attributes=True)
+
+class CartResponse(BaseModel):
+    id: int
+    user_id: int
+    items: List[CartItemResponse] = []
+    cart_total: float = 0.0
+    model_config = ConfigDict(from_attributes=True)
+
+
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ORDERS
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+class OrderCreate(BaseModel):
+    """Used by the backend /orders/checkout route (reads from cart)."""
+    shipping_address: str
+
+class CheckoutAddress(BaseModel):
+    """The address object the frontend sends in POST /orders/."""
+    name: str
+    phone: str
+    street: str
+    city: str
+    state: str
+    pincode: str
+
+class FrontendOrderCreate(BaseModel):
+    """Shape of what CheckoutPage sends to POST /orders/."""
+    address: CheckoutAddress
+    shipping_method: str = "standard"
+    payment_method: str = "razorpay"
+    total: Optional[float] = None   # frontend calculates this; backend recalculates from cart
+
+class OrderItemResponse(BaseModel):
+    id: int
+    quantity: int
+    price_at_purchase: float
+    product: ProductResponse
+    model_config = ConfigDict(from_attributes=True)
+
+class TrackingEventResponse(BaseModel):
+    id: int
+    status: str
+    location: Optional[str] = None
+    description: Optional[str] = None
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+class OrderResponse(BaseModel):
+    id: int
+    user_id: int
+    total_amount: float
+    payment_status: str
+    shipping_status: str
+    razorpay_order_id: Optional[str] = None
+    delhivery_waybill: Optional[str] = None
+    shipping_address: str
+    created_at: datetime
+    updated_at: datetime
+    items: List[OrderItemResponse] = []
+    tracking_events: List[TrackingEventResponse] = []
+    model_config = ConfigDict(from_attributes=True)
+
+class OrderSummaryResponse(BaseModel):
+    id: int
+    total_amount: float
+    payment_status: str
+    shipping_status: str
+    item_count: int
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+class OrderListResponse(BaseModel):
+    """Frontend reads `data.orders`."""
+    orders: List[OrderSummaryResponse]
+
+class TrackingResponse(BaseModel):
+    """Response for GET /orders/{id}/track"""
+    order_id: int
+    shipping_status: str
+    waybill: Optional[str] = None
+    events: List[TrackingEventResponse] = []
+
+
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ADMIN / SELLER DASHBOARD
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+class OrderStatusUpdate(BaseModel):
+    shipping_status: str
+    location: Optional[str] = None
+    description: Optional[str] = None
+
+class AdminOrderUpdate(BaseModel):
+    """Frontend sends { status } to PUT /admin/orders/{id}."""
+    status: str
+
+class PaymentStatusUpdate(BaseModel):
+    payment_status: str
+    razorpay_payment_id: Optional[str] = None
+    delhivery_waybill: Optional[str] = None
+
+class DashboardStats(BaseModel):
+    total_orders: int
+    pending_orders: int
+    shipped_orders: int
+    delivered_orders: int
+    total_revenue: float
+    total_products: int
+    low_stock_products: int
+    total_users: int
+
+class AdminDashboardResponse(BaseModel):
+    """camelCase shape the frontend reads."""
+    totalOrders: int
+    totalRevenue: float
+    totalProducts: int
+    recentOrders: list
+
+class ProductStockAlert(BaseModel):
+    id: int
+    sku: str
+    name: str
+    stock_quantity: int
+    model_config = ConfigDict(from_attributes=True)
+
+class AdminUserResponse(BaseModel):
+    id: int
+    name: str
+    email: str
+    phone: Optional[str] = None
+    is_verified: int
+    is_admin: bool
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+===== D:\Rudhita\rudhita-backend\user.py =====
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+from typing import List
+
+import models
+import schemas
+from database import get_db
+from utils import get_current_user, hash_password
+
+router = APIRouter(prefix="/user", tags=["User Profile"])
+
+
+# â”€â”€ PROFILE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+@router.get("/profile", response_model=schemas.UserResponse)
+def get_profile(current_user: models.User = Depends(get_current_user)):
+    return current_user
+
+
+@router.put("/profile", response_model=schemas.UserResponse)
+def update_profile(
+    update: schemas.UserProfileUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    if update.name is not None:
+        current_user.name = update.name
+    if update.phone is not None:
+        current_user.phone = update.phone
+    if update.password is not None:
+        # Settings tab sends password here â€” hash and store it
+        if len(update.password) < 6:
+            raise HTTPException(status_code=400, detail="Password must be at least 6 characters.")
+        current_user.password_hash = hash_password(update.password)
+    db.add(current_user)
+    db.commit()
+    db.refresh(current_user)
+    return current_user
+
+
+# â”€â”€ ADDRESSES â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+@router.get("/addresses")
+def list_addresses(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    """Returns {addresses: [...]} â€” frontend reads addressesData.addresses"""
+    addrs = (
+        db.query(models.Address)
+        .filter(models.Address.user_id == current_user.id)
+        .order_by(models.Address.is_default.desc(), models.Address.created_at.desc())
+        .all()
+    )
+    return {"addresses": [_serialize_address(a) for a in addrs]}
+
+
+@router.post("/addresses", status_code=201)
+def add_address(
+    data: schemas.AddressCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    if data.is_default:
+        _clear_default(db, current_user.id)
+    address = models.Address(
+        user_id=current_user.id,
+        name=data.name,
+        phone=data.phone,
+        street=data.street,
+        city=data.city,
+        state=data.state,
+        pincode=data.pincode,
+        is_default=data.is_default,
+    )
+    db.add(address)
+    db.commit()
+    db.refresh(address)
+    return _serialize_address(address)
+
+
+@router.put("/addresses/{address_id}")
+def update_address(
+    address_id: int,
+    data: schemas.AddressUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    address = _get_own_address(db, address_id, current_user.id)
+    if data.is_default:
+        _clear_default(db, current_user.id)
+    for field, value in data.model_dump(exclude_unset=True).items():
+        setattr(address, field, value)
+    db.commit()
+    db.refresh(address)
+    return _serialize_address(address)
+
+
+@router.delete("/addresses/{address_id}")
+def delete_address(
+    address_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    address = _get_own_address(db, address_id, current_user.id)
+    db.delete(address)
+    db.commit()
+    return {"status": "success", "message": "Address deleted."}
+
+
+@router.patch("/addresses/{address_id}/set-default")
+def set_default_address(
+    address_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    _clear_default(db, current_user.id)
+    address = _get_own_address(db, address_id, current_user.id)
+    address.is_default = True
+    db.commit()
+    db.refresh(address)
+    return _serialize_address(address)
+
+
+# â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+def _serialize_address(a: models.Address) -> dict:
+    """Return camelCase `isDefault` so frontend's a.isDefault works."""
+    return {
+        "id": a.id,
+        "name": a.name,
+        "phone": a.phone,
+        "street": a.street,
+        "city": a.city,
+        "state": a.state,
+        "pincode": a.pincode,
+        "isDefault": a.is_default,
+        "created_at": a.created_at.isoformat() if a.created_at else None,
+    }
+
+
+def _get_own_address(db: Session, address_id: int, user_id: int) -> models.Address:
+    address = db.query(models.Address).filter(
+        models.Address.id == address_id,
+        models.Address.user_id == user_id,
+    ).first()
+    if not address:
+        raise HTTPException(status_code=404, detail="Address not found.")
+    return address
+
+
+def _clear_default(db: Session, user_id: int):
+    db.query(models.Address).filter(
+        models.Address.user_id == user_id,
+        models.Address.is_default == True,
+    ).update({"is_default": False})
+===== D:\Rudhita\rudhita-backend\utils.py =====
+import os
+from passlib.context import CryptContext
+from datetime import datetime, timedelta, timezone
+import jwt
+from jwt.exceptions import InvalidTokenError
+from fastapi import Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer
+from sqlalchemy.orm import Session
+from database import get_db
+
+# --- Load secrets from environment (never hardcode these) ---
+SECRET_KEY = os.getenv("JWT_SECRET_KEY")
+if not SECRET_KEY:
+    raise ValueError("JWT_SECRET_KEY is not set in the environment. Check your .env file.")
+
+ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
+
+# Tell Passlib to use the industry-standard bcrypt algorithm
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+# OAuth2 scheme â€” tells FastAPI where to find the Bearer token
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+
+
+def hash_password(password: str) -> str:
+    """Converts a plain password into a secure hash."""
+    return pwd_context.hash(password)
+
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Checks if a typed password matches the hash in the database."""
+    return pwd_context.verify(plain_password, hashed_password)
+
+
+def create_access_token(data: dict) -> str:
+    """Generates a signed JWT for a logged-in user."""
+    to_encode = data.copy()
+    expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+    """
+    FastAPI dependency â€” decodes the JWT and returns the authenticated User.
+    Use on any protected route:  user = Depends(get_current_user)
+    """
+    import models  # local import to avoid circular dependency
+
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials.",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        email: str = payload.get("sub")
+        user_id: int = payload.get("id")
+        if email is None or user_id is None:
+            raise credentials_exception
+    except InvalidTokenError:
+        raise credentials_exception
+
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if user is None:
+        raise credentials_exception
+
+    return user
