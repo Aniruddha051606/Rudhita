@@ -1,8 +1,17 @@
+// src/pages/AuthPage.jsx
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Input } from '../components/Input';
 import { Button } from '../components/Button';
-import { API, setAuthToken } from '../utils/api';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FIX 1 (BUILD CRASH):
+//   BEFORE: import { API, setAuthToken }  from '../utils/api';
+//           ↑ "setAuthToken" does NOT exist → Vite throws [MISSING_EXPORT] → build fails
+//   AFTER:  import { API, setAuthTokens } from '../utils/api';
+//           ↑ "setAuthTokens" is the actual exported name (plural, stores both tokens)
+// ─────────────────────────────────────────────────────────────────────────────
+import { API, setAuthTokens } from '../utils/api';
 import './AuthPage.css';
 
 export function AuthPage() {
@@ -14,27 +23,17 @@ export function AuthPage() {
   const [otpAttempts, setOtpAttempts] = useState(0);
 
   // Login Form
-  const [loginForm, setLoginForm] = useState({
-    email: '',
-    password: ''
-  });
+  const [loginForm, setLoginForm] = useState({ email: '', password: '' });
 
   // Register Form
   const [registerForm, setRegisterForm] = useState({
-    name: '',
-    email: '',
-    phone: '',
-    password: '',
-    confirmPassword: ''
+    name: '', email: '', phone: '', password: '', confirmPassword: ''
   });
 
   // OTP Form
-  const [otpForm, setOtpForm] = useState({
-    otp: '',
-    email: ''
-  });
+  const [otpForm, setOtpForm] = useState({ otp: '', email: '' });
 
-  // OTP Timer
+  // OTP countdown timer
   const [otpTimer, setOtpTimer] = useState(0);
   React.useEffect(() => {
     if (otpTimer > 0) {
@@ -42,6 +41,8 @@ export function AuthPage() {
       return () => clearTimeout(timer);
     }
   }, [otpTimer]);
+
+  // ── Handlers ──────────────────────────────────────────────────────────────
 
   const handleLoginChange = (e) => {
     const { name, value } = e.target;
@@ -57,7 +58,6 @@ export function AuthPage() {
 
   const handleOTPChange = (e) => {
     const { name, value } = e.target;
-    // Only allow 6 digits
     if (name === 'otp' && value.length <= 6) {
       setOtpForm(prev => ({ ...prev, [name]: value }));
     } else if (name !== 'otp') {
@@ -65,6 +65,8 @@ export function AuthPage() {
     }
     setMessage('');
   };
+
+  // ── Login ─────────────────────────────────────────────────────────────────
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -77,13 +79,25 @@ export function AuthPage() {
     try {
       const response = await API.auth.login({
         email: loginForm.email,
-        password: loginForm.password
+        password: loginForm.password,
       });
 
-      if (response.token) {
-        setAuthToken(response.token);
+      // ───────────────────────────────────────────────────────────────────────
+      // FIX 2 (SILENT LOGIN FAILURE):
+      //   BEFORE: if (response.token) { setAuthToken(response.token); }
+      //           ↑ backend returns { access_token, refresh_token } — no "token" key
+      //           ↑ response.token is always undefined → user never gets logged in
+      //   AFTER:  setAuthTokens({ access_token, refresh_token })
+      //           ↑ reads the actual field names the backend sends
+      //           ↑ stores both tokens so refresh flow works
+      // ───────────────────────────────────────────────────────────────────────
+      if (response.access_token) {
+        setAuthTokens({
+          access_token:  response.access_token,
+          refresh_token: response.refresh_token,
+        });
         setMessage('Login successful! Redirecting...');
-        setTimeout(() => navigate('/'), 1500);
+        setTimeout(() => navigate('/'), 1200);
       } else {
         setMessage('Login failed. Please try again.');
       }
@@ -94,33 +108,32 @@ export function AuthPage() {
     }
   };
 
+  // ── Register ──────────────────────────────────────────────────────────────
+
   const handleRegister = async (e) => {
     e.preventDefault();
 
-    // Validation
-    if (!registerForm.name || !registerForm.email || !registerForm.phone || !registerForm.password || !registerForm.confirmPassword) {
+    if (!registerForm.name || !registerForm.email || !registerForm.phone ||
+        !registerForm.password || !registerForm.confirmPassword) {
       setMessage('Please fill in all fields');
       return;
     }
-
     if (registerForm.password !== registerForm.confirmPassword) {
       setMessage('Passwords do not match');
       return;
     }
-
-    if (registerForm.password.length < 6) {
-      setMessage('Password must be at least 6 characters');
+    if (registerForm.password.length < 8) {
+      setMessage('Password must be at least 8 characters');
       return;
     }
 
     setIsLoading(true);
     try {
-      // Send OTP to email
       await API.auth.register({
-        name: registerForm.name,
-        email: registerForm.email,
-        phone: registerForm.phone,
-        password: registerForm.password
+        name:     registerForm.name,
+        email:    registerForm.email,
+        phone:    registerForm.phone,
+        password: registerForm.password,
       });
 
       setOtpForm(prev => ({ ...prev, email: registerForm.email }));
@@ -134,6 +147,8 @@ export function AuthPage() {
     }
   };
 
+  // ── OTP Verification ──────────────────────────────────────────────────────
+
   const handleOTPVerify = async (e) => {
     e.preventDefault();
 
@@ -144,42 +159,57 @@ export function AuthPage() {
 
     setIsLoading(true);
     try {
-      const response = await API.auth.verifyOTP({
-        email: otpForm.email,
-        otp: otpForm.otp
-      });
+      await API.auth.verifyOTP({ email: otpForm.email, otp: otpForm.otp });
 
-      if (response.token) {
-        setAuthToken(response.token);
-        setMessage('Registration successful! Redirecting...');
-        setTimeout(() => navigate('/'), 1500);
-      } else {
-        setMessage('OTP verification failed. Please try again.');
-      }
+      // ─────────────────────────────────────────────────────────────────────
+      // FIX 3 (OTP VERIFY ALWAYS SHOWS "FAILED"):
+      //   BEFORE: if (response.token) { setAuthToken(response.token); navigate('/'); }
+      //           else { setMessage('OTP verification failed. Please try again.'); }
+      //           ↑ verifyOTP returns { status: "success", message: "..." } — no token
+      //           ↑ response.token is always undefined → always hits the else branch
+      //           ↑ user sees "OTP verification failed" even when verification WORKED
+      //
+      //   AFTER:  show success message → redirect to login tab after 1.5s
+      //           verifyOTP just marks the account as verified; the user then logs in.
+      //           The backend does NOT issue a token at the verification step.
+      // ─────────────────────────────────────────────────────────────────────
+      setMessage('Account verified! Please sign in.');
+      setShowOTP(false);
+      setOtpForm({ otp: '', email: '' });
+      setOtpAttempts(0);
+      setActiveTab('login');
     } catch (error) {
+      const remaining = 3 - (otpAttempts + 1);
       setOtpAttempts(prev => prev + 1);
-      if (otpAttempts >= 3) {
+      if (otpAttempts >= 2) {
         setMessage('Too many failed attempts. Please request a new OTP.');
       } else {
-        setMessage(error.message || `Invalid OTP. ${3 - otpAttempts} attempts remaining.`);
+        setMessage(
+          error.message ||
+          `Invalid OTP. ${remaining} attempt${remaining === 1 ? '' : 's'} remaining.`
+        );
       }
     } finally {
       setIsLoading(false);
     }
   };
 
+  // ── Resend OTP ────────────────────────────────────────────────────────────
+
   const handleResendOTP = async () => {
     setIsLoading(true);
     try {
-      // TODO: Implement resend OTP endpoint
+      await API.auth.resendOTP({ email: otpForm.email });
       setOtpTimer(60);
-      setMessage('OTP resent to your email.');
+      setMessage('A new OTP has been sent to your email.');
     } catch (error) {
       setMessage('Failed to resend OTP. Please try again.');
     } finally {
       setIsLoading(false);
     }
   };
+
+  // ── Render ────────────────────────────────────────────────────────────────
 
   return (
     <div className="auth-page">
@@ -195,19 +225,13 @@ export function AuthPage() {
             <div className="auth-tabs">
               <button
                 className={`auth-tab ${activeTab === 'login' ? 'active' : ''}`}
-                onClick={() => {
-                  setActiveTab('login');
-                  setMessage('');
-                }}
+                onClick={() => { setActiveTab('login'); setMessage(''); }}
               >
                 Sign In
               </button>
               <button
                 className={`auth-tab ${activeTab === 'register' ? 'active' : ''}`}
-                onClick={() => {
-                  setActiveTab('register');
-                  setMessage('');
-                }}
+                onClick={() => { setActiveTab('register'); setMessage(''); }}
               >
                 Create Account
               </button>
@@ -225,7 +249,6 @@ export function AuthPage() {
                   onChange={handleLoginChange}
                   required
                 />
-
                 <Input
                   label="Password"
                   type="password"
@@ -235,21 +258,17 @@ export function AuthPage() {
                   onChange={handleLoginChange}
                   required
                 />
-
                 {message && (
-                  <div className={`auth-message ${message.includes('successful') || message.includes('Redirecting') ? 'success' : 'error'}`}>
+                  <div className={`auth-message ${
+                    message.includes('successful') || message.includes('Redirecting')
+                      ? 'success' : 'error'
+                  }`}>
                     {message}
                   </div>
                 )}
-
-                <Button
-                  variant="primary"
-                  className="auth-submit"
-                  disabled={isLoading}
-                >
+                <Button variant="primary" className="auth-submit" disabled={isLoading}>
                   {isLoading ? 'Signing In...' : 'Sign In'}
                 </Button>
-
                 <p className="auth-footer">
                   <a href="#forgot" style={{ color: 'var(--terra)', textDecoration: 'none' }}>
                     Forgot password?
@@ -270,7 +289,6 @@ export function AuthPage() {
                   onChange={handleRegisterChange}
                   required
                 />
-
                 <Input
                   label="Email Address"
                   type="email"
@@ -280,7 +298,6 @@ export function AuthPage() {
                   onChange={handleRegisterChange}
                   required
                 />
-
                 <Input
                   label="Phone Number"
                   type="tel"
@@ -290,7 +307,6 @@ export function AuthPage() {
                   onChange={handleRegisterChange}
                   required
                 />
-
                 <Input
                   label="Password"
                   type="password"
@@ -300,7 +316,6 @@ export function AuthPage() {
                   onChange={handleRegisterChange}
                   required
                 />
-
                 <Input
                   label="Confirm Password"
                   type="password"
@@ -310,18 +325,15 @@ export function AuthPage() {
                   onChange={handleRegisterChange}
                   required
                 />
-
                 {message && (
-                  <div className={`auth-message ${message.includes('successful') || message.includes('Redirecting') || message.includes('OTP sent') ? 'success' : 'error'}`}>
+                  <div className={`auth-message ${
+                    message.includes('successful') || message.includes('OTP sent')
+                      ? 'success' : 'error'
+                  }`}>
                     {message}
                   </div>
                 )}
-
-                <Button
-                  variant="primary"
-                  className="auth-submit"
-                  disabled={isLoading}
-                >
+                <Button variant="primary" className="auth-submit" disabled={isLoading}>
                   {isLoading ? 'Creating Account...' : 'Create Account'}
                 </Button>
               </form>
@@ -332,9 +344,8 @@ export function AuthPage() {
           <form onSubmit={handleOTPVerify} className="auth-form">
             <h2 className="otp-title">Verify Your Email</h2>
             <p className="otp-hint">
-              We've sent a 6-digit OTP to <strong>{otpForm.email}</strong>. Please enter it below.
+              We've sent a 6-digit OTP to <strong>{otpForm.email}</strong>. Enter it below.
             </p>
-
             <Input
               label="OTP Code"
               type="text"
@@ -345,13 +356,14 @@ export function AuthPage() {
               maxLength="6"
               required
             />
-
             {message && (
-              <div className={`auth-message ${message.includes('successful') || message.includes('Redirecting') ? 'success' : 'error'}`}>
+              <div className={`auth-message ${
+                message.includes('verified') || message.includes('sent')
+                  ? 'success' : 'error'
+              }`}>
                 {message}
               </div>
             )}
-
             <Button
               variant="primary"
               className="auth-submit"
@@ -390,13 +402,11 @@ export function AuthPage() {
           </form>
         )}
 
-        {/* Footer */}
         <div className="auth-card-footer">
           <p>By continuing, you agree to our Terms of Service and Privacy Policy</p>
         </div>
       </div>
 
-      {/* Background Decoration */}
       <div className="auth-bg-decoration" />
     </div>
   );
