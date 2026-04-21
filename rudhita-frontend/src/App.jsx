@@ -24,6 +24,7 @@ import CartSidebar from './components/CartSidebar';
 
 function AppLayout({ children, isLoggedIn, onLogout, onOpenAuth, onOpenCart, cartCount }) {
   const location = useLocation();
+  const [searchQuery, setSearchQuery] = useState('');
   const hideNavFooter = location.pathname === '/auth' || location.pathname.startsWith('/admin');
 
   // Nav Scroll Effect
@@ -34,6 +35,14 @@ function AppLayout({ children, isLoggedIn, onLogout, onOpenAuth, onOpenCart, car
     window.addEventListener('scroll', handleScroll);
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
+
+  const handleSearch = (e) => {
+    e.preventDefault();
+    if (searchQuery.trim()) {
+      // You can implement search logic here
+      console.log('Search:', searchQuery);
+    }
+  };
 
   if (hideNavFooter) {
     return children;
@@ -59,6 +68,21 @@ function AppLayout({ children, isLoggedIn, onLogout, onOpenAuth, onOpenCart, car
           </div>
           <Link to="/" className="nav-logo">Rudhita</Link>
           <div className="nav-right">
+            <form onSubmit={handleSearch} className="nav-search-form">
+              <input
+                type="text"
+                placeholder="Search..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="nav-search-input"
+              />
+              <button type="submit" className="nav-search-btn" aria-label="Search">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <circle cx="11" cy="11" r="8"></circle>
+                  <path d="m21 21-4.35-4.35"></path>
+                </svg>
+              </button>
+            </form>
             {isLoggedIn ? (
               <>
                 <Link to="/account" className="nav-link">Account</Link>
