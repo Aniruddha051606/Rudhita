@@ -28,16 +28,17 @@ export function CartPage() {
     }
   };
 
-  const updateQuantity = async (productId, newQuantity) => {
+  // FIX: Now accepts both productId (for the API) and itemId (for UI updates)
+  const updateQuantity = async (productId, itemId, newQuantity) => {
     if (newQuantity < 1) {
-      removeItem(productId);
+      removeItem(itemId);
       return;
     }
     try {
       await API.cart.update(productId, newQuantity);
       setCartItems(items =>
         items.map(item =>
-          item.product_id === productId
+          item.id === itemId
             ? { ...item, quantity: newQuantity }
             : item
         )
@@ -47,17 +48,17 @@ export function CartPage() {
     }
   };
 
-  const removeItem = async (productId) => {
+  // FIX: Deletes using the specific cart item ID, not the product ID
+  const removeItem = async (itemId) => {
     try {
-      await API.cart.remove(productId);
-      setCartItems(items => items.filter(item => item.product_id !== productId));
+      await API.cart.remove(itemId);
+      setCartItems(items => items.filter(item => item.id !== itemId));
     } catch (error) {
       console.error('Error removing item:', error);
     }
   };
 
   const applyPromoCode = async () => {
-    // TODO: Implement promo code validation
     if (promoCode === 'SAVE10') {
       setDiscount(0.1);
     } else {
@@ -65,7 +66,8 @@ export function CartPage() {
     }
   };
 
-  const subtotal = cartItems.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+  // FIX: Maps to item.product.price
+  const subtotal = cartItems.reduce((sum, item) => sum + ((item.product?.price || 0) * item.quantity), 0);
   const discountAmount = subtotal * discount;
   const shipping = subtotal > 3000 ? 0 : 100;
   const tax = (subtotal - discountAmount) * 0.18;
@@ -81,7 +83,7 @@ export function CartPage() {
         <div className="cart-empty-state">
           <h2 style={{ fontSize: '32px', marginBottom: '16px' }}>Your cart is empty</h2>
           <p style={{ opacity: '0.6', marginBottom: '32px' }}>
-            Discover our premium oversized t-shirts and add them to your cart.
+            Discover our premium luxury items and add them to your cart.
           </p>
           <Link to="/products" className="btn-solid">Continue Shopping</Link>
         </div>
@@ -94,32 +96,34 @@ export function CartPage() {
             </h2>
 
             {cartItems.map(item => (
-              <div key={item.product_id} className="cart-item-row">
+              <div key={item.id} className="cart-item-row">
                 <div className="cart-item-image">
-                  {item.image_url && (
+                  {/* FIX: Mapped to item.product.image_url */}
+                  {item.product?.image_url && (
                     <img
-                      src={item.image_url}
-                      alt={item.name}
+                      src={item.product.image_url}
+                      alt={item.product.name}
                       style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                     />
                   )}
                 </div>
 
                 <div className="cart-item-details">
-                  <h3 className="cart-item-name">{item.name}</h3>
+                  {/* FIX: Mapped to item.product.name */}
+                  <h3 className="cart-item-name">{item.product?.name}</h3>
                   <p className="cart-item-meta">
-                    {item.color && <span>{item.color} · </span>}
-                    {item.size && <span>Size: {item.size}</span>}
+                    {item.product?.color && <span>{item.product.color} · </span>}
+                    {item.product?.size && <span>Size: {item.product.size}</span>}
                   </p>
                   <p style={{ marginTop: '8px', fontWeight: '600' }}>
-                    ₹{(item.price * item.quantity).toLocaleString()}
+                    ₹{((item.product?.price || 0) * item.quantity).toLocaleString()}
                   </p>
                 </div>
 
                 <div className="cart-item-controls">
                   <div style={{ display: 'flex', gap: '8px', marginBottom: '12px' }}>
                     <button
-                      onClick={() => updateQuantity(item.product_id, item.quantity - 1)}
+                      onClick={() => updateQuantity(item.product?.id, item.id, item.quantity - 1)}
                       style={{
                         padding: '8px 12px',
                         background: 'var(--cream-d)',
@@ -133,7 +137,7 @@ export function CartPage() {
                     <input
                       type="number"
                       value={item.quantity}
-                      onChange={(e) => updateQuantity(item.product_id, Math.max(1, parseInt(e.target.value) || 1))}
+                      onChange={(e) => updateQuantity(item.product?.id, item.id, Math.max(1, parseInt(e.target.value) || 1))}
                       style={{
                         width: '50px',
                         padding: '8px',
@@ -145,7 +149,7 @@ export function CartPage() {
                       min="1"
                     />
                     <button
-                      onClick={() => updateQuantity(item.product_id, item.quantity + 1)}
+                      onClick={() => updateQuantity(item.product?.id, item.id, item.quantity + 1)}
                       style={{
                         padding: '8px 12px',
                         background: 'var(--cream-d)',
@@ -158,7 +162,7 @@ export function CartPage() {
                     </button>
                   </div>
                   <button
-                    onClick={() => removeItem(item.product_id)}
+                    onClick={() => removeItem(item.id)}
                     style={{
                       background: 'none',
                       border: 'none',
@@ -236,7 +240,6 @@ export function CartPage() {
               Proceed to Checkout
             </Button>
 
-            {/* Continue Shopping */}
             <Link
               to="/products"
               style={{
