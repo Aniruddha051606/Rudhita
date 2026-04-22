@@ -25,7 +25,7 @@ export default function Home({ onAddToCart }) {
     const loadProducts = async () => {
       try {
         const data = await fetchAPI('/products/');
-        setProducts(data);
+        setProducts(data.products || []);
       } catch (err) {
         console.error("Failed to fetch products");
       } finally {
@@ -40,10 +40,10 @@ export default function Home({ onAddToCart }) {
       {/* Hero Section */}
       <section className="hero">
         <div className="hero-copy">
-          <p className="hero-eyebrow">New Season — Monsoon Edit 2026</p>
+          <p className="hero-eyebrow">New Season â€” Monsoon Edit 2026</p>
           <h1 className="hero-h1">Wear what<br/><em>the earth</em><br/>remembers</h1>
           <p className="hero-body">
-            Clothing, jewellery and objects made to last — sourced slow, crafted with care. Each piece carries the mark of the hands that made it.
+            Clothing, jewellery and objects made to last â€” sourced slow, crafted with care. Each piece carries the mark of the hands that made it.
           </p>
           <div className="hero-actions">
             <a href="#products" className="btn-solid">Explore the Edit</a>
@@ -72,7 +72,7 @@ export default function Home({ onAddToCart }) {
               <div className="cat-content">
                 <p className="cat-lbl">Collection 0{i+1}</p>
                 <h3 className="cat-name">{cat}</h3>
-                <div className="cat-arrow">Explore →</div>
+                <div className="cat-arrow">Explore â†’</div>
               </div>
             </div>
           ))}
@@ -87,7 +87,7 @@ export default function Home({ onAddToCart }) {
         </div>
         <div className="prod-grid">
           {loading ? (
-            <div className="catalog-loading">Curating the collection…</div>
+            <div className="catalog-loading">Curating the collectionâ€¦</div>
           ) : (
             products.map((p) => (
               <div key={p.id} className="prod-card rv">
@@ -98,7 +98,7 @@ export default function Home({ onAddToCart }) {
                 <div className="prod-info">
                   <p className="prod-tag">Rudhita</p>
                   <h3 className="prod-name">{p.name}</h3>
-                  <p className="prod-price">₹{p.price.toLocaleString('en-IN')}</p>
+                  <p className="prod-price">₹{parseFloat(p.price || 0).toLocaleString('en-IN')}</p>
                   <p className="prod-sku">{p.sku}</p>
                 </div>
               </div>
@@ -117,7 +117,7 @@ export default function Home({ onAddToCart }) {
             </blockquote>
             <div className="philo-rule rv rv-2"></div>
             <p className="philo-body rv rv-2">
-              Rudhita was born from a simple refusal — to keep buying things that disappear. We work with artisans across India to create clothing, jewellery and objects that carry real stories.
+              Rudhita was born from a simple refusal â€” to keep buying things that disappear. We work with artisans across India to create clothing, jewellery and objects that carry real stories.
             </p>
           </div>
           <div className="philo-visual rv rv-1">

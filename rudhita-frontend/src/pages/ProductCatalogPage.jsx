@@ -84,9 +84,14 @@ export function ProductCatalogPage() {
     setFilteredProducts(filtered);
   };
 
+  // BUG 20 FIX: was a console.log TODO — now calls API.cart.add
   const handleAddToCart = async (productId) => {
-    // TODO: Implement add to cart
-    console.log('Add to cart:', productId);
+    try {
+      await API.cart.add(productId, 1);
+      alert('Added to cart!');
+    } catch (error) {
+      alert(error.message || 'Please log in to add items to cart.');
+    }
   };
 
   return (
@@ -190,7 +195,7 @@ export function ProductCatalogPage() {
                 checked={selectedPriceRange === '0-499'}
                 onChange={(e) => setSelectedPriceRange(e.target.value)}
               />
-              <span>₹0 - ₹499</span>
+              <span>â‚¹0 - â‚¹499</span>
             </label>
             <label className="filter-option">
               <input
@@ -200,7 +205,7 @@ export function ProductCatalogPage() {
                 checked={selectedPriceRange === '500-999'}
                 onChange={(e) => setSelectedPriceRange(e.target.value)}
               />
-              <span>₹500 - ₹999</span>
+              <span>â‚¹500 - â‚¹999</span>
             </label>
             <label className="filter-option">
               <input
@@ -210,7 +215,7 @@ export function ProductCatalogPage() {
                 checked={selectedPriceRange === '1000-'}
                 onChange={(e) => setSelectedPriceRange(e.target.value)}
               />
-              <span>₹1000+</span>
+              <span>â‚¹1000+</span>
             </label>
           </div>
         </div>

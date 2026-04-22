@@ -186,7 +186,7 @@ export function AdminDashboardPage() {
               textAlign: 'center'
             }}>
               <p style={{ margin: '0 0 8px', fontSize: '12px', opacity: '0.6', textTransform: 'uppercase' }}>Total Revenue</p>
-              <p style={{ margin: 0, fontSize: '32px', fontWeight: '600' }}>₹{(dashboard.totalRevenue || 0).toLocaleString()}</p>
+              <p style={{ margin: 0, fontSize: '32px', fontWeight: '600' }}>â‚¹{(dashboard.totalRevenue || 0).toLocaleString()}</p>
             </div>
             <div style={{
               padding: 'var(--spacing-lg)',
@@ -196,7 +196,7 @@ export function AdminDashboardPage() {
             }}>
               <p style={{ margin: '0 0 8px', fontSize: '12px', opacity: '0.6', textTransform: 'uppercase' }}>Avg Order Value</p>
               <p style={{ margin: 0, fontSize: '32px', fontWeight: '600' }}>
-                ₹{dashboard.totalOrders ? Math.round(dashboard.totalRevenue / dashboard.totalOrders).toLocaleString() : 0}
+                â‚¹{dashboard.totalOrders ? Math.round(dashboard.totalRevenue / dashboard.totalOrders).toLocaleString() : 0}
               </p>
             </div>
           </div>
@@ -223,10 +223,11 @@ export function AdminDashboardPage() {
                     <tr key={order.id} style={{ borderBottom: '1px solid rgba(24,16,12,0.05)' }}>
                       <td style={{ padding: '12px' }}>#{order.id}</td>
                       <td style={{ padding: '12px' }}>{order.customer_name || 'N/A'}</td>
-                      <td style={{ padding: '12px' }}>₹{order.total?.toLocaleString()}</td>
+                      <td style={{ padding: '12px' }}>â‚¹{order.total?.toLocaleString()}</td>
                       <td style={{ padding: '12px' }}>
-                        <Badge variant={order.status === 'delivered' ? 'success' : 'info'} size="sm">
-                          {order.status}
+                        {/* BUG 23 FIX: use shipping_status */}
+                        <Badge variant={(order.shipping_status || order.status) === 'delivered' ? 'success' : 'info'} size="sm">
+                          {order.shipping_status || order.status}
                         </Badge>
                       </td>
                     </tr>
@@ -335,10 +336,11 @@ export function AdminDashboardPage() {
                   <tr key={product.id} style={{ borderBottom: '1px solid rgba(24,16,12,0.05)' }}>
                     <td style={{ padding: '12px' }}>{product.name}</td>
                     <td style={{ padding: '12px' }}>{product.category}</td>
-                    <td style={{ padding: '12px' }}>₹{product.price?.toLocaleString()}</td>
+                    <td style={{ padding: '12px' }}>â‚¹{product.price?.toLocaleString()}</td>
                     <td style={{ padding: '12px' }}>
-                      <Badge variant={product.stock > 10 ? 'success' : 'warning'} size="sm">
-                        {product.stock}
+                      {/* BUG 4 FIX: backend returns stock_quantity not stock */}
+                      <Badge variant={product.stock_quantity > 10 ? 'success' : 'warning'} size="sm">
+                        {product.stock_quantity ?? 'N/A'}
                       </Badge>
                     </td>
                     <td style={{ padding: '12px' }}>
@@ -388,10 +390,11 @@ export function AdminDashboardPage() {
                   <tr key={order.id} style={{ borderBottom: '1px solid rgba(24,16,12,0.05)' }}>
                     <td style={{ padding: '12px' }}>#{order.id}</td>
                     <td style={{ padding: '12px' }}>{order.customer_name || 'N/A'}</td>
-                    <td style={{ padding: '12px' }}>₹{order.total?.toLocaleString()}</td>
+                    <td style={{ padding: '12px' }}>â‚¹{order.total?.toLocaleString()}</td>
                     <td style={{ padding: '12px' }}>
+                      {/* BUG 24 FIX: added missing statuses; use shipping_status not status */}
                       <select
-                        value={order.status}
+                        value={order.shipping_status || order.status}
                         onChange={(e) => handleUpdateOrderStatus(order.id, e.target.value)}
                         style={{
                           padding: '6px 12px',
@@ -405,13 +408,16 @@ export function AdminDashboardPage() {
                         <option value="pending">Pending</option>
                         <option value="processing">Processing</option>
                         <option value="shipped">Shipped</option>
+                        <option value="out for delivery">Out for Delivery</option>
                         <option value="delivered">Delivered</option>
+                        <option value="return initiated">Return Initiated</option>
+                        <option value="returned">Returned</option>
                         <option value="cancelled">Cancelled</option>
                       </select>
                     </td>
                     <td style={{ padding: '12px' }}>
                       <a href={`/order/${order.id}/tracking`} style={{ color: 'var(--terra)', textDecoration: 'none', fontSize: '13px' }}>
-                        View →
+                        View â†’
                       </a>
                     </td>
                   </tr>

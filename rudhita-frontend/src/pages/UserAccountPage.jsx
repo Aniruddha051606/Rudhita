@@ -81,7 +81,11 @@ export function UserAccountPage() {
     e.preventDefault();
     setIsSaving(true);
     try {
-      await API.user.updateProfile(profile);
+      // BUG 21 FIX: only send name & phone — backend ignores email silently, causing confusing UX
+      await API.user.updateProfile({
+        name: profile.name,
+        phone: profile.phone,
+      });
       setMessage('Profile updated successfully!');
       setTimeout(() => setMessage(''), 3000);
     } catch (error) {
@@ -161,16 +165,18 @@ export function UserAccountPage() {
       return;
     }
 
-    if (passwordForm.newPassword.length < 6) {
-      setMessage('New password must be at least 6 characters');
+    // BUG 22 FIX: backend enforces min_length=8, not 6
+    if (passwordForm.newPassword.length < 8) {
+      setMessage('New password must be at least 8 characters');
       return;
     }
 
     setIsSaving(true);
     try {
-      // TODO: Implement password change endpoint
+      // BUG 31 FIX: send current_password so backend can verify before allowing change
       await API.user.updateProfile({
-        password: passwordForm.newPassword
+        current_password: passwordForm.currentPassword,
+        password: passwordForm.newPassword,
       });
       setMessage('Password changed successfully!');
       setPasswordForm({
@@ -254,13 +260,10 @@ export function UserAccountPage() {
               value={profile.name}
               onChange={handleProfileChange}
             />
-            <Input
-              label="Email Address"
-              type="email"
-              name="email"
-              value={profile.email}
-              onChange={handleProfileChange}
-            />
+            <div style={{ padding: '12px 0', fontSize: '14px', opacity: '0.7' }}>
+              <strong>Email:</strong> {profile.email}
+              <span style={{ marginLeft: '8px', fontSize: '12px', color: 'var(--terra)' }}>(cannot be changed)</span>
+            </div>
             <Input
               label="Phone Number"
               type="tel"
@@ -468,13 +471,15 @@ export function UserAccountPage() {
                   </div>
                   <div>
                     <p style={{ margin: '0 0 4px', fontSize: '12px', opacity: '0.6' }}>Status</p>
-                    <Badge variant={getOrderStatus(order.status)} size="sm">
-                      {order.status}
+                    {/* BUG 23 FIX: shipping_status not status */}
+                    <Badge variant={getOrderStatus(order.shipping_status || order.status)} size="sm">
+                      {order.shipping_status || order.status}
                     </Badge>
                   </div>
                   <div style={{ textAlign: 'right' }}>
                     <p style={{ margin: '0 0 4px', fontSize: '12px', opacity: '0.6' }}>Total</p>
-                    <p style={{ margin: 0, fontWeight: '600' }}>₹{order.total?.toLocaleString()}</p>
+                    {/* BUG 23 FIX: total_amount not total */}
+                    <p style={{ margin: 0, fontWeight: '600' }}>₹{parseFloat(order.total_amount || 0).toLocaleString('en-IN')}</p>
                     <Link
                       to={`/order/${order.id}/tracking`}
                       style={{
@@ -485,7 +490,7 @@ export function UserAccountPage() {
                         textDecoration: 'none'
                       }}
                     >
-                      View Details →
+                      View Details â†’
                     </Link>
                   </div>
                 </div>

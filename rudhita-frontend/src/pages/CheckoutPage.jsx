@@ -14,7 +14,6 @@ export function CheckoutPage() {
   const [cartItems, setCartItems] = useState([]);
   const [message, setMessage] = useState('');
 
-  // Form States
   const [address, setAddress] = useState({
     name: '',
     phone: '',
@@ -37,7 +36,6 @@ export function CheckoutPage() {
       const data = await API.cart.get();
       setCartItems(data.items || []);
 
-      // Load user's primary address if exists
       const addressesData = await API.user.getAddresses();
       if (addressesData.addresses?.length > 0) {
         const defaultAddress = addressesData.addresses.find(a => a.isDefault) || addressesData.addresses[0];
@@ -76,41 +74,65 @@ export function CheckoutPage() {
     return true;
   };
 
+  // BUG 3 FIX: Full Razorpay payment flow — previously skipped payment entirely
   const handlePlaceOrder = async () => {
     if (!validateAddress()) return;
-
     setIsProcessing(true);
     try {
-      // Create order
       const orderData = await API.orders.create({
-        items: cartItems,
         address: address,
         shipping_method: shipping,
         payment_method: paymentMethod,
-        total: calculateTotal()
       });
 
-      // Clear cart
-      await API.cart.clear();
+      const options = {
+        key: orderData.key_id,
+        amount: orderData.amount * 100,
+        currency: orderData.currency || 'INR',
+        order_id: orderData.razorpay_order_id,
+        name: 'Rudhita',
+        description: 'Order Payment',
+        handler: async (response) => {
+          try {
+            await API.orders.confirmPayment(orderData.order_id, {
+              razorpay_order_id:   response.razorpay_order_id,
+              razorpay_payment_id: response.razorpay_payment_id,
+              razorpay_signature:  response.razorpay_signature,
+            });
+            navigate(`/order-confirmation?orderId=${orderData.order_id}`);
+          } catch (verifyError) {
+            setMessage('Payment verification failed: ' + verifyError.message);
+            setIsProcessing(false);
+          }
+        },
+        prefill: {
+          name: address.name,
+          contact: address.phone,
+        },
+        theme: { color: '#A85538' },
+        modal: {
+          ondismiss: () => setIsProcessing(false),
+        },
+      };
 
-      // Redirect to order confirmation
-      navigate(`/order-confirmation?orderId=${orderData.order_id}`);
+      const rzp = new window.Razorpay(options);
+      rzp.open();
     } catch (error) {
       setMessage('Error placing order: ' + error.message);
-    } finally {
       setIsProcessing(false);
     }
   };
 
-  const subtotal = cartItems.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+  // BUG 2 FIX: item.product.price and item.product.name (backend nests product data)
+  const subtotal = cartItems.reduce(
+    (sum, item) => sum + (parseFloat(item.product?.price || 0) * item.quantity), 0
+  );
   const shippingCost = shipping === 'express' ? 200 : (subtotal > 3000 ? 0 : 100);
   const tax = subtotal * 0.18;
   const calculateTotal = () => subtotal + shippingCost + tax;
   const total = calculateTotal();
 
-  if (isLoading) {
-    return <Loader />;
-  }
+  if (isLoading) return <Loader />;
 
   if (cartItems.length === 0) {
     return (
@@ -127,61 +149,31 @@ export function CheckoutPage() {
       <h1 style={{ fontSize: '32px', fontFamily: 'var(--font-serif)', marginBottom: '32px' }}>Checkout</h1>
 
       {/* Progress Indicator */}
-      <div style={{
-        display: 'flex',
-        justifyContent: 'space-between',
-        marginBottom: '40px',
-        position: 'relative'
-      }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '40px', position: 'relative' }}>
         {[1, 2, 3].map((s) => (
           <div key={s} style={{ flex: 1, textAlign: 'center', position: 'relative' }}>
-            <div
-              style={{
-                width: '40px',
-                height: '40px',
-                margin: '0 auto 8px',
-                borderRadius: '50%',
-                background: step >= s ? 'var(--terra)' : 'var(--cream-d)',
-                color: step >= s ? 'var(--cream)' : 'var(--dark)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontWeight: '600',
-                transition: 'all var(--duration-base) var(--ease)'
-              }}
-            >
+            <div style={{
+              width: '40px', height: '40px', margin: '0 auto 8px', borderRadius: '50%',
+              background: step >= s ? 'var(--terra)' : 'var(--cream-d)',
+              color: step >= s ? 'var(--cream)' : 'var(--dark)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontWeight: '600', transition: 'all var(--duration-base) var(--ease)'
+            }}>
               {s}
             </div>
-            <p style={{
-              margin: 0,
-              fontSize: '12px',
-              opacity: step >= s ? 1 : 0.5,
-              textTransform: 'uppercase',
-              letterSpacing: '0.05em'
-            }}>
+            <p style={{ margin: 0, fontSize: '12px', opacity: step >= s ? 1 : 0.5, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
               {['Address', 'Review', 'Payment'][s - 1]}
             </p>
           </div>
         ))}
-        <div style={{
-          position: 'absolute',
-          top: '19px',
-          left: 0,
-          right: 0,
-          height: '2px',
-          background: 'var(--cream-d)',
-          zIndex: -1
-        }} />
+        <div style={{ position: 'absolute', top: '19px', left: 0, right: 0, height: '2px', background: 'var(--cream-d)', zIndex: -1 }} />
       </div>
 
       {message && (
         <div style={{
-          padding: '12px 16px',
-          marginBottom: '20px',
-          borderRadius: 'var(--radius-md)',
+          padding: '12px 16px', marginBottom: '20px', borderRadius: 'var(--radius-md)',
           background: message.includes('Error') ? 'rgba(168,85,56,0.1)' : 'rgba(107,122,94,0.1)',
-          color: message.includes('Error') ? 'var(--error)' : 'var(--success)',
-          fontSize: '14px'
+          color: message.includes('Error') ? 'var(--error)' : 'var(--success)', fontSize: '14px'
         }}>
           {message}
         </div>
@@ -195,76 +187,26 @@ export function CheckoutPage() {
             <div>
               <h2 style={{ fontSize: '20px', marginBottom: '20px' }}>Shipping Address</h2>
               <form style={{ display: 'flex', flexDirection: 'column', gap: 'var(--spacing-lg)' }}>
-                <Input
-                  label="Full Name"
-                  name="name"
-                  value={address.name}
-                  onChange={handleAddressChange}
-                  required
-                />
-                <Input
-                  label="Phone Number"
-                  type="tel"
-                  name="phone"
-                  value={address.phone}
-                  onChange={handleAddressChange}
-                  required
-                />
-                <Input
-                  label="Street Address"
-                  name="street"
-                  value={address.street}
-                  onChange={handleAddressChange}
-                  required
-                />
+                <Input label="Full Name" name="name" value={address.name} onChange={handleAddressChange} required />
+                <Input label="Phone Number" type="tel" name="phone" value={address.phone} onChange={handleAddressChange} required />
+                <Input label="Street Address" name="street" value={address.street} onChange={handleAddressChange} required />
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--spacing-lg)' }}>
-                  <Input
-                    label="City"
-                    name="city"
-                    value={address.city}
-                    onChange={handleAddressChange}
-                    required
-                  />
-                  <Input
-                    label="State"
-                    name="state"
-                    value={address.state}
-                    onChange={handleAddressChange}
-                    required
-                  />
+                  <Input label="City" name="city" value={address.city} onChange={handleAddressChange} required />
+                  <Input label="State" name="state" value={address.state} onChange={handleAddressChange} required />
                 </div>
-                <Input
-                  label="Pincode"
-                  name="pincode"
-                  value={address.pincode}
-                  onChange={handleAddressChange}
-                  required
-                />
+                <Input label="Pincode" name="pincode" value={address.pincode} onChange={handleAddressChange} required />
 
-                {/* Shipping Method */}
                 <div style={{ marginTop: '20px', paddingTop: '20px', borderTop: '1px solid rgba(24,16,12,0.1)' }}>
                   <h3 style={{ fontSize: '16px', marginBottom: '12px' }}>Shipping Method</h3>
                   <label style={{ display: 'flex', gap: '12px', marginBottom: '12px', cursor: 'pointer' }}>
-                    <input
-                      type="radio"
-                      name="shipping"
-                      value="standard"
-                      checked={shipping === 'standard'}
-                      onChange={(e) => setShipping(e.target.value)}
-                    />
+                    <input type="radio" name="shipping" value="standard" checked={shipping === 'standard'} onChange={(e) => setShipping(e.target.value)} />
                     <div>
                       <div style={{ fontWeight: '600' }}>Standard Delivery</div>
-                      <div style={{ fontSize: '13px', opacity: '0.6' }}>5-7 business days · {shippingCost > 0 && `₹${shippingCost}`}</div>
+                      <div style={{ fontSize: '13px', opacity: '0.6' }}>5-7 business days · {shippingCost > 0 ? `₹${shippingCost}` : 'FREE'}</div>
                     </div>
                   </label>
                   <label style={{ display: 'flex', gap: '12px', cursor: 'pointer' }}>
-                    <input
-                      type="radio"
-                      name="shipping"
-                      value="express"
-                      checked={shipping === 'express'}
-                      onChange={(e) => setShipping(e.target.value)}
-                    />
+                    <input type="radio" name="shipping" value="express" checked={shipping === 'express'} onChange={(e) => setShipping(e.target.value)} />
                     <div>
                       <div style={{ fontWeight: '600' }}>Express Delivery</div>
                       <div style={{ fontSize: '13px', opacity: '0.6' }}>2-3 business days · ₹200</div>
@@ -279,57 +221,29 @@ export function CheckoutPage() {
           {step === 2 && (
             <div>
               <h2 style={{ fontSize: '20px', marginBottom: '20px' }}>Order Review</h2>
-
-              {/* Shipping Info */}
-              <div style={{
-                padding: 'var(--spacing-lg)',
-                background: 'var(--cream-d)',
-                borderRadius: 'var(--radius-lg)',
-                marginBottom: '20px'
-              }}>
-                <h3 style={{ fontSize: '14px', marginBottom: '12px', textTransform: 'uppercase', opacity: '0.6' }}>
-                  Shipping To
-                </h3>
+              <div style={{ padding: 'var(--spacing-lg)', background: 'var(--cream-d)', borderRadius: 'var(--radius-lg)', marginBottom: '20px' }}>
+                <h3 style={{ fontSize: '14px', marginBottom: '12px', textTransform: 'uppercase', opacity: '0.6' }}>Shipping To</h3>
                 <p style={{ margin: 0, fontWeight: '600' }}>{address.name}</p>
-                <p style={{ margin: '4px 0', fontSize: '14px' }}>
-                  {address.street}, {address.city}, {address.state} {address.pincode}
-                </p>
+                <p style={{ margin: '4px 0', fontSize: '14px' }}>{address.street}, {address.city}, {address.state} {address.pincode}</p>
                 <p style={{ margin: '4px 0', fontSize: '14px' }}>{address.phone}</p>
-                <button
-                  onClick={() => setStep(1)}
-                  style={{
-                    background: 'none',
-                    border: 'none',
-                    color: 'var(--terra)',
-                    cursor: 'pointer',
-                    fontSize: '13px',
-                    marginTop: '8px',
-                    textDecoration: 'underline'
-                  }}
-                >
+                <button onClick={() => setStep(1)} style={{ background: 'none', border: 'none', color: 'var(--terra)', cursor: 'pointer', fontSize: '13px', marginTop: '8px', textDecoration: 'underline' }}>
                   Edit Address
                 </button>
               </div>
 
-              {/* Order Items */}
               <div style={{ marginBottom: '20px' }}>
-                <h3 style={{ fontSize: '14px', marginBottom: '12px', textTransform: 'uppercase', opacity: '0.6' }}>
-                  Order Items
-                </h3>
+                <h3 style={{ fontSize: '14px', marginBottom: '12px', textTransform: 'uppercase', opacity: '0.6' }}>Order Items</h3>
                 {cartItems.map(item => (
-                  <div key={item.product_id} style={{
-                    display: 'flex',
-                    gap: '12px',
-                    padding: '12px 0',
-                    borderBottom: '1px solid rgba(24,16,12,0.05)'
-                  }}>
+                  <div key={item.product_id} style={{ display: 'flex', gap: '12px', padding: '12px 0', borderBottom: '1px solid rgba(24,16,12,0.05)' }}>
                     <div style={{ width: '60px', height: '60px', background: 'var(--cream-d)', borderRadius: '4px' }} />
                     <div style={{ flex: 1 }}>
-                      <p style={{ margin: 0, fontWeight: '600' }}>{item.name}</p>
+                      {/* BUG 2 FIX: item.product.name not item.name */}
+                      <p style={{ margin: 0, fontWeight: '600' }}>{item.product?.name}</p>
                       <p style={{ margin: '4px 0', fontSize: '13px', opacity: '0.6' }}>Qty: {item.quantity}</p>
                     </div>
                     <div style={{ textAlign: 'right' }}>
-                      <p style={{ margin: 0, fontWeight: '600' }}>₹{(item.price * item.quantity).toLocaleString()}</p>
+                      {/* BUG 2 FIX: item.product.price not item.price */}
+                      <p style={{ margin: 0, fontWeight: '600' }}>₹{(parseFloat(item.product?.price || 0) * item.quantity).toLocaleString('en-IN')}</p>
                     </div>
                   </div>
                 ))}
@@ -342,27 +256,15 @@ export function CheckoutPage() {
             <div>
               <h2 style={{ fontSize: '20px', marginBottom: '20px' }}>Payment Method</h2>
               <label style={{ display: 'flex', gap: '12px', padding: '16px', border: '1px solid rgba(24,16,12,0.1)', borderRadius: 'var(--radius-lg)', cursor: 'pointer', marginBottom: '12px' }}>
-                <input
-                  type="radio"
-                  name="payment"
-                  value="razorpay"
-                  checked={paymentMethod === 'razorpay'}
-                  onChange={(e) => setPaymentMethod(e.target.value)}
-                />
+                <input type="radio" name="payment" value="razorpay" checked={paymentMethod === 'razorpay'} onChange={(e) => setPaymentMethod(e.target.value)} />
                 <div>
                   <div style={{ fontWeight: '600' }}>Razorpay (Card/UPI/Wallet)</div>
                   <div style={{ fontSize: '13px', opacity: '0.6' }}>Secure payment gateway</div>
                 </div>
               </label>
-
-              <div style={{
-                padding: 'var(--spacing-lg)',
-                background: 'var(--cream-d)',
-                borderRadius: 'var(--radius-lg)',
-                marginTop: '20px'
-              }}>
+              <div style={{ padding: 'var(--spacing-lg)', background: 'var(--cream-d)', borderRadius: 'var(--radius-lg)', marginTop: '20px' }}>
                 <p style={{ margin: 0, fontSize: '13px', opacity: '0.7' }}>
-                  You will be redirected to Razorpay payment gateway to complete your payment securely.
+                  You will be redirected to Razorpay to complete payment securely.
                 </p>
               </div>
             </div>
@@ -371,33 +273,18 @@ export function CheckoutPage() {
           {/* Navigation Buttons */}
           <div style={{ display: 'flex', gap: '12px', marginTop: '32px' }}>
             {step > 1 && (
-              <Button
-                variant="outline"
-                onClick={() => setStep(step - 1)}
-                disabled={isProcessing}
-              >
+              <Button variant="outline" onClick={() => setStep(step - 1)} disabled={isProcessing}>
                 ← Previous Step
               </Button>
             )}
             {step < 3 && (
-              <Button
-                variant="primary"
-                onClick={() => {
-                  if (step === 1 && !validateAddress()) return;
-                  setStep(step + 1);
-                }}
-                disabled={isProcessing}
-              >
+              <Button variant="primary" onClick={() => { if (step === 1 && !validateAddress()) return; setStep(step + 1); }} disabled={isProcessing}>
                 Next Step →
               </Button>
             )}
             {step === 3 && (
-              <Button
-                variant="primary"
-                onClick={handlePlaceOrder}
-                disabled={isProcessing}
-              >
-                {isProcessing ? 'Processing...' : `Pay ₹${total.toLocaleString()}`}
+              <Button variant="primary" onClick={handlePlaceOrder} disabled={isProcessing}>
+                {isProcessing ? 'Processing...' : `Pay ₹${total.toLocaleString('en-IN')}`}
               </Button>
             )}
           </div>
@@ -405,53 +292,19 @@ export function CheckoutPage() {
 
         {/* Order Summary Sidebar */}
         <div style={{ position: 'sticky', top: '100px', height: 'fit-content' }}>
-          <div style={{
-            padding: 'var(--spacing-lg)',
-            background: 'var(--cream-d)',
-            borderRadius: 'var(--radius-lg)'
-          }}>
-            <h3 style={{ fontSize: '16px', marginBottom: '16px', margin: 0 }}>Order Summary</h3>
-
-            <div style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              fontSize: '14px',
-              marginBottom: '12px'
-            }}>
-              <span>Subtotal</span>
-              <span>₹{subtotal.toLocaleString()}</span>
+          <div style={{ padding: 'var(--spacing-lg)', background: 'var(--cream-d)', borderRadius: 'var(--radius-lg)' }}>
+            <h3 style={{ fontSize: '16px', marginBottom: '16px', margin: '0 0 16px' }}>Order Summary</h3>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '14px', marginBottom: '12px' }}>
+              <span>Subtotal</span><span>₹{subtotal.toLocaleString('en-IN')}</span>
             </div>
-
-            <div style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              fontSize: '14px',
-              marginBottom: '12px'
-            }}>
-              <span>Shipping</span>
-              <span>{shippingCost === 0 ? 'FREE' : `₹${shippingCost}`}</span>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '14px', marginBottom: '12px' }}>
+              <span>Shipping</span><span>{shippingCost === 0 ? 'FREE' : `₹${shippingCost}`}</span>
             </div>
-
-            <div style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              fontSize: '14px',
-              marginBottom: '16px',
-              paddingBottom: '16px',
-              borderBottom: '1px solid rgba(24,16,12,0.1)'
-            }}>
-              <span>Tax (18%)</span>
-              <span>₹{tax.toLocaleString()}</span>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '14px', marginBottom: '16px', paddingBottom: '16px', borderBottom: '1px solid rgba(24,16,12,0.1)' }}>
+              <span>Tax (18%)</span><span>₹{tax.toLocaleString('en-IN')}</span>
             </div>
-
-            <div style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              fontSize: '16px',
-              fontWeight: '600'
-            }}>
-              <span>Total</span>
-              <span>₹{total.toLocaleString()}</span>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '16px', fontWeight: '600' }}>
+              <span>Total</span><span>₹{total.toLocaleString('en-IN')}</span>
             </div>
           </div>
         </div>

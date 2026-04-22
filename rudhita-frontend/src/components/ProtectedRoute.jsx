@@ -1,20 +1,25 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { Navigate } from 'react-router-dom';
-import { isAuthenticated } from '../utils/api';
+import { isAuthenticated, API } from '../utils/api';
 
 export function ProtectedRoute({ children, requiredRole = null }) {
-  const authenticated = isAuthenticated();
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
 
-  if (!authenticated) {
-    return <Navigate to="/auth" replace />;
-  }
+  useEffect(() => {
+    if (!isAuthenticated()) {
+      setLoading(false);
+      return;
+    }
+    API.auth.me()
+      .then(u => setUser(u))
+      .catch(() => setUser(null))
+      .finally(() => setLoading(false));
+  }, []);
 
-  // TODO: Add role-based access control when needed
-  // const userRole = getCurrentUserRole();
-  // if (requiredRole && userRole !== requiredRole) {
-  //   return <Navigate to="/" replace />;
-  // }
-
+  if (loading) return null;
+  if (!user) return <Navigate to="/auth" replace />;
+  if (requiredRole === 'admin' && !user.is_admin) return <Navigate to="/" replace />;
   return children;
 }
 

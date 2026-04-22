@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useLocation } from 'react-router-dom';
-import { API, isAuthenticated } from './utils/api';
+import { API, isAuthenticated, clearAuthTokens } from './utils/api';
 
 // Pages
 import HomePage from './pages/HomePage';
@@ -43,9 +43,9 @@ function AppLayout({ children, isLoggedIn, onLogout, onOpenAuth, onOpenCart, car
     <>
       <div className="announce">
         <div className="marquee">
-          <span>Complimentary shipping on orders above ₹3,000</span>
+          <span>Complimentary shipping on orders above â‚¹3,000</span>
           <span>Handcrafted with intention, designed for life</span>
-          <span>New arrivals — Monsoon Edit 2026 now live</span>
+          <span>New arrivals â€” Monsoon Edit 2026 now live</span>
           <span>All pieces made to order across India</span>
         </div>
       </div>
@@ -54,8 +54,8 @@ function AppLayout({ children, isLoggedIn, onLogout, onOpenAuth, onOpenCart, car
         <div className="nav-inner">
           <div className="nav-left">
             <Link to="/products">Shop</Link>
-            <a href="#story">Story</a>
-            <a href="#contact">Contact</a>
+            <Link to="/#philosophy">Story</Link>
+            <a href="mailto:hello@rudhita.com">Contact</a>
           </div>
           <Link to="/" className="nav-logo">Rudhita</Link>
           <div className="nav-right">
@@ -81,7 +81,7 @@ function AppLayout({ children, isLoggedIn, onLogout, onOpenAuth, onOpenCart, car
       <footer>
         <div className="foot-inner">
           <div className="foot-bottom" style={{ borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: '20px' }}>
-            <p className="foot-copy">© 2026 Rudhita. All rights reserved.</p>
+            <p className="foot-copy">Â© 2026 Rudhita. All rights reserved.</p>
             <div className="foot-legal">
               <a href="#">Privacy</a>
               <a href="#">Terms</a>
@@ -108,9 +108,11 @@ function App() {
     }
   }, [isLoggedIn]);
 
-  const handleLogout = () => {
-    localStorage.removeItem("rudhita_token");
-    window.location.reload();
+  // BUG 5 FIX: clear both tokens, call backend to blocklist JTI
+  const handleLogout = async () => {
+    try { await API.auth.logout(); } catch {}
+    clearAuthTokens();
+    window.location.href = '/';
   };
 
   const handleAddToCart = async (productId) => {

@@ -9,7 +9,7 @@ export default function Storefront() {
     const loadCatalog = async () => {
       try {
         const data = await fetchAPI("/products/");
-        setProducts(data);
+        setProducts(data.products || []);
       } catch (error) {
         console.error("Failed to load catalog:", error);
       } finally {
@@ -40,7 +40,7 @@ export default function Storefront() {
         <div key={product.id} className="product-card">
           <h3>{product.name}</h3>
           <p style={{ color: '#666', fontSize: '0.9rem', flexGrow: 1 }}>{product.description}</p>
-          <p className="price">₹{product.price}</p>
+          <p className="price">â‚¹{product.price}</p>
           <button onClick={() => handleAddToCart(product.id)}>
             Add to Cart
           </button>

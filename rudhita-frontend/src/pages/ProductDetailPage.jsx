@@ -28,32 +28,19 @@ export function ProductDetailPage() {
       const data = await API.products.get(id);
       setProduct(data);
 
-      // Load related products (products in same category)
       if (data.category) {
         try {
           const related = await API.products.byCategory(data.category);
-          setRelatedProducts(related.products?.filter(p => p.id !== id).slice(0, 4) || []);
+          // BUG 18 FIX: Number(id) — useParams gives string, p.id is number
+          setRelatedProducts(related.products?.filter(p => p.id !== Number(id)).slice(0, 4) || []);
         } catch (e) {
           console.error('Error loading related products:', e);
         }
       }
 
-      // TODO: Load reviews from API
       setReviews([
-        {
-          id: 1,
-          author: 'John Doe',
-          rating: 5,
-          text: 'Amazing quality and fit! Highly recommend.',
-          date: '2024-01-15'
-        },
-        {
-          id: 2,
-          author: 'Jane Smith',
-          rating: 4,
-          text: 'Great t-shirt, perfect oversized fit.',
-          date: '2024-01-10'
-        }
+        { id: 1, author: 'John Doe',   rating: 5, text: 'Amazing quality and fit! Highly recommend.', date: '2024-01-15' },
+        { id: 2, author: 'Jane Smith', rating: 4, text: 'Great t-shirt, perfect oversized fit.',       date: '2024-01-10' },
       ]);
     } catch (error) {
       console.error('Error loading product:', error);
@@ -62,35 +49,36 @@ export function ProductDetailPage() {
     }
   };
 
+  // BUG 19 FIX: was a console.log TODO — now calls API.cart.add
   const handleAddToCart = async () => {
     if (!selectedSize) {
       alert('Please select a size');
       return;
     }
-    // TODO: Implement add to cart with size and color selection
-    console.log('Add to cart:', { productId: id, size: selectedSize, color: selectedColor, quantity });
+    try {
+      await API.cart.add(product.id, quantity);
+      alert(`${product.name} added to cart!`);
+    } catch (error) {
+      alert(error.message || 'Failed to add to cart. Please log in first.');
+    }
   };
 
   const colors = [
     { name: 'Black', hex: '#000000' },
     { name: 'White', hex: '#FFFFFF' },
-    { name: 'Gray', hex: '#808080' },
-    { name: 'Navy', hex: '#000080' }
+    { name: 'Gray',  hex: '#808080' },
+    { name: 'Navy',  hex: '#000080' },
   ];
 
   const sizes = ['XS', 'S', 'M', 'L', 'XL', 'XXL'];
 
-  if (isLoading) {
-    return <Loader />;
-  }
+  if (isLoading) return <Loader />;
 
   if (!product) {
     return (
       <div className="product-detail-page" style={{ textAlign: 'center', padding: '100px 20px' }}>
         <h2>Product not found</h2>
-        <Link to="/products" className="btn-solid" style={{ marginTop: '20px' }}>
-          Back to Shop
-        </Link>
+        <Link to="/products" className="btn-solid" style={{ marginTop: '20px' }}>Back to Shop</Link>
       </div>
     );
   }
@@ -113,26 +101,14 @@ export function ProductDetailPage() {
         <div className="product-gallery">
           <div className="product-main-image">
             {product.image_url && (
-              <img
-                src={product.image_url}
-                alt={product.name}
-                style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-              />
+              <img src={product.image_url} alt={product.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
             )}
           </div>
           <div className="product-thumbnails">
             {Array.from({ length: 4 }).map((_, i) => (
-              <div
-                key={i}
-                className={`product-thumbnail ${mainImageIndex === i ? 'active' : ''}`}
-                onClick={() => setMainImageIndex(i)}
-              >
+              <div key={i} className={`product-thumbnail ${mainImageIndex === i ? 'active' : ''}`} onClick={() => setMainImageIndex(i)}>
                 {product.image_url && (
-                  <img
-                    src={product.image_url}
-                    alt={`Thumbnail ${i + 1}`}
-                    style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                  />
+                  <img src={product.image_url} alt={`Thumbnail ${i + 1}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                 )}
               </div>
             ))}
@@ -141,33 +117,28 @@ export function ProductDetailPage() {
 
         {/* Product Info */}
         <div className="product-info-section">
-          {/* Title Section */}
           <div className="product-title-section">
             <h1 className="product-detail-title">{product.name}</h1>
             <p className="product-detail-sku">SKU: {product.sku || 'N/A'}</p>
 
-            {/* Rating */}
             <div style={{ marginTop: '12px', display: 'flex', alignItems: 'center', gap: '12px' }}>
               <div style={{ color: 'var(--gold)' }}>★★★★☆ ({rating})</div>
-              <span style={{ fontSize: '12px\', opacity: 0.6' }}>24 reviews</span>
+              {/* BUG 17 FIX: was style={{ fontSize: '12px\', opacity: 0.6' }} — broken escape */}
+              <span style={{ fontSize: '12px', opacity: 0.6 }}>24 reviews</span>
             </div>
           </div>
 
           {/* Pricing */}
           <div className="product-pricing">
-            <span className="product-current-price">₹{product.price?.toLocaleString()}</span>
+            {/* BUG 27 FIX: parseFloat handles Decimal-as-string from backend */}
+            <span className="product-current-price">₹{parseFloat(product.price || 0).toLocaleString('en-IN')}</span>
             {product.original_price && (
-              <span className="product-original-price">₹{product.original_price.toLocaleString()}</span>
+              <span className="product-original-price">₹{parseFloat(product.original_price).toLocaleString('en-IN')}</span>
             )}
-            {discount && (
-              <Badge variant="error" size="sm">{discount}% OFF</Badge>
-            )}
+            {discount && <Badge variant="error" size="sm">{discount}% OFF</Badge>}
           </div>
 
-          {/* Description */}
-          <div className="product-description">
-            {product.description}
-          </div>
+          <div className="product-description">{product.description}</div>
 
           {/* Colors */}
           <div className="product-colors">
@@ -190,11 +161,7 @@ export function ProductDetailPage() {
             <div className="size-label">Size</div>
             <div className="size-options">
               {sizes.map(size => (
-                <button
-                  key={size}
-                  className={`size-option ${selectedSize === size ? 'active' : ''}`}
-                  onClick={() => setSelectedSize(size)}
-                >
+                <button key={size} className={`size-option ${selectedSize === size ? 'active' : ''}`} onClick={() => setSelectedSize(size)}>
                   {size}
                 </button>
               ))}
@@ -205,12 +172,7 @@ export function ProductDetailPage() {
           <div className="product-quantity">
             <span className="quantity-label">Quantity</span>
             <div className="quantity-control">
-              <button
-                className="qty-btn"
-                onClick={() => setQuantity(Math.max(1, quantity - 1))}
-              >
-                −
-              </button>
+              <button className="qty-btn" onClick={() => setQuantity(Math.max(1, quantity - 1))}>−</button>
               <input
                 type="number"
                 className="qty-input"
@@ -218,26 +180,16 @@ export function ProductDetailPage() {
                 onChange={(e) => setQuantity(Math.max(1, parseInt(e.target.value) || 1))}
                 min="1"
               />
-              <button
-                className="qty-btn"
-                onClick={() => setQuantity(quantity + 1)}
-              >
-                +
-              </button>
+              <button className="qty-btn" onClick={() => setQuantity(quantity + 1)}>+</button>
             </div>
           </div>
 
-          {/* Action Buttons */}
+          {/* Actions */}
           <div className="product-actions">
-            <Button variant="primary" onClick={handleAddToCart}>
-              Add to Cart
-            </Button>
-            <Button variant="outline">
-              ♡ Wishlist
-            </Button>
+            <Button variant="primary" onClick={handleAddToCart}>Add to Cart</Button>
+            <Button variant="outline">♡ Wishlist</Button>
           </div>
 
-          {/* Product Info */}
           <div style={{ marginTop: '32px', paddingTop: '32px', borderTop: '1px solid rgba(24,16,12,0.1)' }}>
             <h3 style={{ marginBottom: '16px', fontWeight: '600' }}>Size & Fit Guide</h3>
             <p style={{ fontSize: '13px', lineHeight: '1.7', opacity: '0.7' }}>
@@ -247,15 +199,12 @@ export function ProductDetailPage() {
         </div>
       </div>
 
-      {/* Reviews Section */}
+      {/* Reviews */}
       <div className="product-reviews-section">
         <div className="reviews-header">
-          <h2 style={{ fontSize: '24px', fontFamily: 'var(--font-serif)', fontWeight: 'var(--font-weight-normal)' }}>
-            Customer Reviews
-          </h2>
+          <h2 style={{ fontSize: '24px', fontFamily: 'var(--font-serif)', fontWeight: 'var(--font-weight-normal)' }}>Customer Reviews</h2>
           <Button variant="outline">Write a Review</Button>
         </div>
-
         <div>
           {reviews.map(review => (
             <div key={review.id} className="review-item">
@@ -264,9 +213,7 @@ export function ProductDetailPage() {
                   <p className="review-author">{review.author}</p>
                   <p style={{ fontSize: '12px', opacity: '0.6' }}>{review.date}</p>
                 </div>
-                <div className="review-rating">
-                  {'★'.repeat(review.rating)}{'☆'.repeat(5 - review.rating)}
-                </div>
+                <div className="review-rating">{'★'.repeat(review.rating)}{'☆'.repeat(5 - review.rating)}</div>
               </div>
               <p className="review-text">{review.text}</p>
             </div>
@@ -281,16 +228,8 @@ export function ProductDetailPage() {
             Related <em style={{ fontStyle: 'italic', color: 'var(--terra)' }}>Products</em>
           </h2>
           <div className="prod-grid">
-            {relatedProducts.map(product => (
-              <ProductCard
-                key={product.id}
-                id={product.id}
-                title={product.name}
-                price={product.price}
-                originalPrice={product.original_price}
-                image={product.image_url}
-                tag={product.category}
-              />
+            {relatedProducts.map(p => (
+              <ProductCard key={p.id} id={p.id} title={p.name} price={p.price} originalPrice={p.original_price} image={p.image_url} tag={p.category} />
             ))}
           </div>
         </section>
