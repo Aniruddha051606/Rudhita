@@ -1,6 +1,6 @@
 // src/utils/api.js
-
-const BASE_URL = import.meta.env.VITE_API_URL || "https://rudhita-1.onrender.com";
+const rawBaseUrl = import.meta.env.VITE_API_URL || "https://rudhita-1.onrender.com";
+const BASE_URL = rawBaseUrl.replace(/\/+$/, "");
 
 export class APIError extends Error {
   constructor(message, status, data) {

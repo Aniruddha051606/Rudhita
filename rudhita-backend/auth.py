@@ -1,5 +1,5 @@
 """
-auth.py  —  Authentication Routes (PATCHED)
+auth.py  â€”  Authentication Routes (PATCHED)
 
 Changes from audit:
   - register_user(): no longer reveals whether email exists (prevents enumeration)
@@ -13,6 +13,7 @@ Changes from audit:
 
 import secrets
 from datetime import datetime, timezone
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from slowapi import Limiter
@@ -29,22 +30,7 @@ router  = APIRouter(prefix="/auth", tags=["Authentication"])
 limiter = Limiter(key_func=get_remote_address)
 
 
-# ── Internal helpers ──────────────────────────────────────────────────────────
-
-def _generate_otp(db: Session, email: str) -> str:
-    """
-    Deletes any existing OTP for this email, creates a new one,
-    and stores its HMAC hash (not the plain code).
-    Returns the plain code so the caller can email it.
-    """
-    db.query(models.OTP).filter(models.OTP.email == email).delete()
-    otp_plain  = str(secrets.randbelow(900_000) + 100_000)  # 100000–999999
-    otp_hashed = utils.hash_otp(otp_plain)
-    expiry     = datetime.now(timezone.utc).replace(tzinfo=None) + __import__("datetime").timedelta(minutes=10)
-    # store the hash; plain OTP only travels via email, never in the DB
-    db.add(models.OTP(email=email, otp_code=otp_hashed, expires_at=expiry))
-    db.commit()
-    return otp_plain
+# â”€â”€ Internal helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 from datetime import timedelta
@@ -59,7 +45,7 @@ def _generate_otp(db: Session, email: str) -> str:
     return otp_plain
 
 
-# ── Register ──────────────────────────────────────────────────────────────────
+# â”€â”€ Register â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @router.post("/register", status_code=status.HTTP_201_CREATED)
 @limiter.limit("3/hour")
@@ -90,14 +76,14 @@ def register_user(
         otp_plain = _generate_otp(db, user.email)
         utils.send_otp_email(user.email, otp_plain)
 
-    # Same message regardless of outcome — prevents email enumeration
+    # Same message regardless of outcome â€” prevents email enumeration
     return {
         "status":  "success",
         "message": "If this email is new, a verification code has been sent.",
     }
 
 
-# ── Verify OTP ────────────────────────────────────────────────────────────────
+# â”€â”€ Verify OTP â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @router.post("/verify-otp")
 @limiter.limit("10/hour")
@@ -136,7 +122,7 @@ def verify_otp(
     return {"status": "success", "message": "Account successfully verified!"}
 
 
-# ── Resend OTP ────────────────────────────────────────────────────────────────
+# â”€â”€ Resend OTP â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @router.post("/resend-otp")
 @limiter.limit("5/hour")
@@ -150,14 +136,14 @@ def resend_otp(
         otp_plain = _generate_otp(db, data.email)
         utils.send_otp_email(data.email, otp_plain)
 
-    # Same message always — prevents enumeration
+    # Same message always â€” prevents enumeration
     return {
         "status":  "success",
         "message": "If this email is registered and unverified, a new code has been sent.",
     }
 
 
-# ── Login ─────────────────────────────────────────────────────────────────────
+# â”€â”€ Login â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @router.post("/login", response_model=schemas.Token)
 @limiter.limit("5/minute")
@@ -197,7 +183,7 @@ def login(
     }
 
 
-# ── Refresh access token ──────────────────────────────────────────────────────
+# â”€â”€ Refresh access token â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @router.post("/refresh", response_model=schemas.Token)
 def refresh_access_token(
@@ -242,19 +228,20 @@ def refresh_access_token(
     }
 
 
-# ── Me ────────────────────────────────────────────────────────────────────────
+# â”€â”€ Me â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @router.get("/me", response_model=schemas.UserResponse)
 def get_me(current_user: models.User = Depends(utils.get_current_user)):
     return current_user
 
 
-# ── Logout ────────────────────────────────────────────────────────────────────
+# â”€â”€ Logout â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @router.post("/logout")
 def logout(
     token_str: str = Depends(utils.oauth2_scheme),
-    payload: schemas.RefreshRequest = None,
+    # BUG 28 FIX: Optional prevents FastAPI rejecting requests with no body
+    payload: Optional[schemas.RefreshRequest] = None,
     db: Session = Depends(get_db),
 ):
     """
@@ -282,7 +269,7 @@ def logout(
         if jti:
             db.merge(models.TokenBlocklist(jti=jti, expires_at=expires_at))
     except InvalidTokenError:
-        pass  # already invalid — that's fine
+        pass  # already invalid â€” that's fine
 
     # Revoke refresh token if provided
     if payload and payload.refresh_token:
