@@ -4,6 +4,7 @@ import { Button } from '../components/Button';
 import { Input } from '../components/Input';
 import { Loader, LoadingSkeleton } from '../components/Loader';
 import { API } from '../utils/api';
+import { ProductErrorBoundary } from '../components/ErrorBoundary';
 import './Pages.css';
 
 export function ProductCatalogPage() {
@@ -84,7 +85,7 @@ export function ProductCatalogPage() {
     setFilteredProducts(filtered);
   };
 
-  // BUG 20 FIX: was a console.log TODO — now calls API.cart.add
+  // BUG 20 FIX: was a console.log TODO â€” now calls API.cart.add
   const handleAddToCart = async (productId) => {
     try {
       await API.cart.add(productId, 1);
@@ -195,7 +196,7 @@ export function ProductCatalogPage() {
                 checked={selectedPriceRange === '0-499'}
                 onChange={(e) => setSelectedPriceRange(e.target.value)}
               />
-              <span>â‚¹0 - â‚¹499</span>
+              <span>Ã¢â€šÂ¹0 - Ã¢â€šÂ¹499</span>
             </label>
             <label className="filter-option">
               <input
@@ -205,7 +206,7 @@ export function ProductCatalogPage() {
                 checked={selectedPriceRange === '500-999'}
                 onChange={(e) => setSelectedPriceRange(e.target.value)}
               />
-              <span>â‚¹500 - â‚¹999</span>
+              <span>Ã¢â€šÂ¹500 - Ã¢â€šÂ¹999</span>
             </label>
             <label className="filter-option">
               <input
@@ -215,7 +216,7 @@ export function ProductCatalogPage() {
                 checked={selectedPriceRange === '1000-'}
                 onChange={(e) => setSelectedPriceRange(e.target.value)}
               />
-              <span>â‚¹1000+</span>
+              <span>Ã¢â€šÂ¹1000+</span>
             </label>
           </div>
         </div>
@@ -231,16 +232,17 @@ export function ProductCatalogPage() {
       ) : (
         <div className={viewMode === 'grid' ? 'prod-grid' : 'prod-list'}>
           {filteredProducts.map(product => (
-            <ProductCard
-              key={product.id}
-              id={product.id}
-              title={product.name}
-              price={product.price}
-              originalPrice={product.original_price}
-              image={product.image_url}
-              tag={product.category}
-              onAddToCart={handleAddToCart}
-            />
+            <ProductErrorBoundary key={product.id}>
+              <ProductCard
+                id={product.id}
+                title={product.name}
+                price={product.price}
+                originalPrice={product.original_price}
+                image={product.image_url}
+                tag={product.category}
+                onAddToCart={handleAddToCart}
+              />
+            </ProductErrorBoundary>
           ))}
         </div>
       )}

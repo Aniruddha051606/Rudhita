@@ -108,6 +108,33 @@ export function AdminDashboardPage() {
     }
   };
 
+  // ── Waybill ────────────────────────────────────────────────────────────────
+  const [waybillInputs, setWaybillInputs] = React.useState({});
+
+  const handleSetWaybill = async (orderId) => {
+    const waybill = waybillInputs[orderId]?.trim();
+    if (!waybill) { setMessage('Please enter a waybill number.'); return; }
+    try {
+      await API.admin.orders.setWaybill(orderId, waybill);
+      setMessage(`Waybill set for order #${orderId}`);
+      await loadDashboardData();
+    } catch (error) {
+      setMessage('Error setting waybill: ' + error.message);
+    }
+  };
+
+  // ── Refund ─────────────────────────────────────────────────────────────────
+  const handleRefund = async (orderId) => {
+    if (!window.confirm(`Trigger Razorpay refund for order #${orderId}? This cannot be undone.`)) return;
+    try {
+      await API.admin.orders.refund(orderId);
+      setMessage(`Refund initiated for order #${orderId}`);
+      await loadDashboardData();
+    } catch (error) {
+      setMessage('Error initiating refund: ' + error.message);
+    }
+  };
+
   const handleUpdateOrderStatus = async (orderId, newStatus) => {
     try {
       await API.admin.orders.update(orderId, { status: newStatus });
@@ -186,7 +213,7 @@ export function AdminDashboardPage() {
               textAlign: 'center'
             }}>
               <p style={{ margin: '0 0 8px', fontSize: '12px', opacity: '0.6', textTransform: 'uppercase' }}>Total Revenue</p>
-              <p style={{ margin: 0, fontSize: '32px', fontWeight: '600' }}>â‚¹{(dashboard.totalRevenue || 0).toLocaleString()}</p>
+              <p style={{ margin: 0, fontSize: '32px', fontWeight: '600' }}>Ã¢â€šÂ¹{(dashboard.totalRevenue || 0).toLocaleString()}</p>
             </div>
             <div style={{
               padding: 'var(--spacing-lg)',
@@ -196,7 +223,7 @@ export function AdminDashboardPage() {
             }}>
               <p style={{ margin: '0 0 8px', fontSize: '12px', opacity: '0.6', textTransform: 'uppercase' }}>Avg Order Value</p>
               <p style={{ margin: 0, fontSize: '32px', fontWeight: '600' }}>
-                â‚¹{dashboard.totalOrders ? Math.round(dashboard.totalRevenue / dashboard.totalOrders).toLocaleString() : 0}
+                Ã¢â€šÂ¹{dashboard.totalOrders ? Math.round(dashboard.totalRevenue / dashboard.totalOrders).toLocaleString() : 0}
               </p>
             </div>
           </div>
@@ -223,7 +250,7 @@ export function AdminDashboardPage() {
                     <tr key={order.id} style={{ borderBottom: '1px solid rgba(24,16,12,0.05)' }}>
                       <td style={{ padding: '12px' }}>#{order.id}</td>
                       <td style={{ padding: '12px' }}>{order.customer_name || 'N/A'}</td>
-                      <td style={{ padding: '12px' }}>â‚¹{order.total?.toLocaleString()}</td>
+                      <td style={{ padding: '12px' }}>Ã¢â€šÂ¹{order.total?.toLocaleString()}</td>
                       <td style={{ padding: '12px' }}>
                         {/* BUG 23 FIX: use shipping_status */}
                         <Badge variant={(order.shipping_status || order.status) === 'delivered' ? 'success' : 'info'} size="sm">
@@ -328,6 +355,7 @@ export function AdminDashboardPage() {
                   <th style={{ padding: '12px', textAlign: 'left', fontSize: '12px', fontWeight: '600', textTransform: 'uppercase' }}>Category</th>
                   <th style={{ padding: '12px', textAlign: 'left', fontSize: '12px', fontWeight: '600', textTransform: 'uppercase' }}>Price</th>
                   <th style={{ padding: '12px', textAlign: 'left', fontSize: '12px', fontWeight: '600', textTransform: 'uppercase' }}>Stock</th>
+                  <th style={{ padding: '12px', textAlign: 'left', fontSize: '12px', fontWeight: '600', textTransform: 'uppercase' }}>Waybill / Refund</th>
                   <th style={{ padding: '12px', textAlign: 'left', fontSize: '12px', fontWeight: '600', textTransform: 'uppercase' }}>Actions</th>
                 </tr>
               </thead>
@@ -336,7 +364,7 @@ export function AdminDashboardPage() {
                   <tr key={product.id} style={{ borderBottom: '1px solid rgba(24,16,12,0.05)' }}>
                     <td style={{ padding: '12px' }}>{product.name}</td>
                     <td style={{ padding: '12px' }}>{product.category}</td>
-                    <td style={{ padding: '12px' }}>â‚¹{product.price?.toLocaleString()}</td>
+                    <td style={{ padding: '12px' }}>Ã¢â€šÂ¹{product.price?.toLocaleString()}</td>
                     <td style={{ padding: '12px' }}>
                       {/* BUG 4 FIX: backend returns stock_quantity not stock */}
                       <Badge variant={product.stock_quantity > 10 ? 'success' : 'warning'} size="sm">
@@ -373,9 +401,9 @@ export function AdminDashboardPage() {
           <div style={{
             border: '1px solid rgba(24,16,12,0.1)',
             borderRadius: 'var(--radius-lg)',
-            overflow: 'hidden'
+            overflowX: 'auto'  /* prevents horizontal clip on tablet/mobile */
           }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '700px' }}>
               <thead>
                 <tr style={{ background: 'var(--cream-d)' }}>
                   <th style={{ padding: '12px', textAlign: 'left', fontSize: '12px', fontWeight: '600', textTransform: 'uppercase' }}>Order ID</th>
@@ -390,7 +418,7 @@ export function AdminDashboardPage() {
                   <tr key={order.id} style={{ borderBottom: '1px solid rgba(24,16,12,0.05)' }}>
                     <td style={{ padding: '12px' }}>#{order.id}</td>
                     <td style={{ padding: '12px' }}>{order.customer_name || 'N/A'}</td>
-                    <td style={{ padding: '12px' }}>â‚¹{order.total?.toLocaleString()}</td>
+                    <td style={{ padding: '12px' }}>Ã¢â€šÂ¹{order.total?.toLocaleString()}</td>
                     <td style={{ padding: '12px' }}>
                       {/* BUG 24 FIX: added missing statuses; use shipping_status not status */}
                       <select
@@ -417,7 +445,7 @@ export function AdminDashboardPage() {
                     </td>
                     <td style={{ padding: '12px' }}>
                       <a href={`/order/${order.id}/tracking`} style={{ color: 'var(--terra)', textDecoration: 'none', fontSize: '13px' }}>
-                        View â†’
+                        View Ã¢â€ â€™
                       </a>
                     </td>
                   </tr>

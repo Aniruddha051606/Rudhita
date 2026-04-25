@@ -678,3 +678,39 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* ══════════════════════════════════════════════════════════════════
+   CHECKOUT LAYOUT — responsive two-column grid
+   (Inline style in CheckoutPage.jsx replaced with this class)
+══════════════════════════════════════════════════════════════════ */
+.checkout-grid {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: var(--spacing-2xl);
+  align-items: start;
+}
+
+@media (max-width: 768px) {
+  .checkout-grid {
+    /* Stack address form above order summary on mobile */
+    grid-template-columns: 1fr;
+  }
+
+  .checkout-grid > div:last-child {
+    /* Order summary moves below the form; un-stick it */
+    position: relative !important;
+    top: auto !important;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   ADMIN DASHBOARD — ensure tables don't clip on tablet/mobile.
+   The AdminDashboardPage already applies overflowX: 'auto' inline
+   for the orders table; this handles the products table too.
+══════════════════════════════════════════════════════════════════ */
+@media (max-width: 900px) {
+  /* Products table in admin */
+  .admin-products-table-wrap {
+    overflow-x: auto;
+  }
+}
