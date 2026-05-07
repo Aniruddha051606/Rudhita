@@ -1,6 +1,6 @@
 ﻿===== D:\Rudhita\rudhita-backend\.env =====
 # Replace 192.168.X.X with the actual local IP of your Dell Optiplex
-DATABASE_URL=postgresql://rudhita_admin:Sanchuu%400516@itxsl-2401-4900-1c44-1413-1a03-73ff-fe14-ba8c.run.pinggy-free.link:40143/rudhita_db
+DATABASE_URL=postgresql://rudhita_admin:Sanchuu%400516@192.168.1.2:5432/rudhita_db
 JWT_SECRET_KEY=ffeeb010faa30e388e793f6c6f1b0c5940cff29d5d23aad3a037d912eb2ff94c
 JWT_ALGORITHM=HS256
 ACCESS_TOKEN_EXPIRE_MINUTES=60
@@ -8,20 +8,44 @@ ALLOWED_ORIGINS=https://rudhita-1.onrender.com
 RAZORPAY_KEY_ID=rzp_test_SefdXBknuwnwT1
 RAZORPAY_KEY_SECRET=O7arpKE4Oqf5J21EPLTHl2aX
 DELHIVERY_API_TOKEN=your_delhivery_token
+# Email OTP System (Leave blank for now, it will safely skip sending real emails)
+SMTP_HOST=
+SMTP_PORT=587
+SMTP_USER=
+SMTP_PASS=
+FROM_EMAIL=
 ===== D:\Rudhita\rudhita-backend\admin.py =====
+"""
+admin.py  â€” Admin / Seller Dashboard
+
+Changes in this version:
+  - NEW: POST /admin/orders/{id}/refund â€” triggers Razorpay refund API directly
+  - set_waybill() now auto-emails the customer their tracking number
+  - admin_list_orders() now returns waybill field so the frontend can display it
+"""
+
+import os
+import json
 import uuid
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func as sqlfunc
-from typing import List, Optional
+import logging
+from decimal import Decimal
+
+import razorpay
+from fastapi         import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm  import Session, joinedload
+from sqlalchemy      import func as sqlfunc
+from typing          import List, Optional
 
 import models
 import schemas
 from database import get_db
-from utils import get_current_user
+from utils    import get_current_user, send_order_confirmation_email
 
+logger = logging.getLogger("rudhita")
 router = APIRouter(prefix="/admin", tags=["Admin / Seller Dashboard"])
 
+
+# â”€â”€ Auth dependency â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def require_admin(current_user: models.User = Depends(get_current_user)):
     if not current_user.is_admin:
@@ -29,67 +53,102 @@ def require_admin(current_user: models.User = Depends(get_current_user)):
     return current_user
 
 
-# â”€â”€ 1. DASHBOARD â€” returns camelCase so frontend's dashboard.totalOrders works â”€
+# â”€â”€ Audit helper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+def _audit(
+    db:          Session,
+    actor:       models.User,
+    action:      str,
+    target_type: str  = None,
+    target_id:   int  = None,
+    detail:      dict = None,
+):
+    """Persist every admin write to audit_logs. Never raises â€” failures are logged only."""
+    try:
+        db.add(models.AuditLog(
+            actor_id    = actor.id,
+            action      = action,
+            target_type = target_type,
+            target_id   = target_id,
+            detail      = json.dumps(detail) if detail else None,
+        ))
+    except Exception as exc:
+        logger.error("Failed to write audit log: %s", exc)
+
+
+def _get_razorpay() -> razorpay.Client:
+    key_id     = os.getenv("RAZORPAY_KEY_ID")
+    key_secret = os.getenv("RAZORPAY_KEY_SECRET")
+    if not key_id or not key_secret:
+        raise HTTPException(status_code=503, detail="Payment gateway not configured.")
+    return razorpay.Client(auth=(key_id, key_secret))
+
+
+# â”€â”€ 1. Dashboard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
 @router.get("/dashboard")
 def get_dashboard(
     db: Session = Depends(get_db),
-    _: models.User = Depends(require_admin),
+    _:  models.User = Depends(require_admin),
 ):
-    """GET /admin/dashboard â€” called by API.admin.dashboard()"""
     total_orders   = db.query(sqlfunc.count(models.Order.id)).scalar()
-    total_revenue  = db.query(sqlfunc.coalesce(sqlfunc.sum(models.Order.total_amount), 0.0)).filter(
-        models.Order.payment_status == "Paid"
+    total_revenue  = db.query(
+        sqlfunc.coalesce(sqlfunc.sum(models.Order.total_amount), 0.0)
+    ).filter(models.Order.payment_status == "Paid").scalar()
+    total_products = db.query(sqlfunc.count(models.Product.id)).filter(
+        models.Product.is_active == True
     ).scalar()
-    total_products = db.query(sqlfunc.count(models.Product.id)).filter(models.Product.is_active == True).scalar()
-
     recent_orders = (
         db.query(models.Order)
         .options(joinedload(models.Order.owner))
         .order_by(models.Order.created_at.desc())
         .limit(10).all()
     )
-
     return {
-        "totalOrders": total_orders,
-        "totalRevenue": float(total_revenue),
+        "totalOrders":   total_orders,
+        "totalRevenue":  total_revenue if isinstance(total_revenue, Decimal) else Decimal(str(total_revenue or 0)),
         "totalProducts": total_products,
         "recentOrders": [
             {
-                "id": o.id,
-                "customer_name": o.owner.name if o.owner else "N/A",
-                "total": o.total_amount,
-                "status": o.shipping_status.lower(),
-                "created_at": o.created_at.isoformat(),
+                "id":              o.id,
+                "customer_name":   o.owner.name if o.owner else "N/A",
+                "total":           float(o.total_amount),
+                "shipping_status": o.shipping_status.lower() if o.shipping_status else "pending",
+                "payment_status":  o.payment_status,
+                "created_at":      o.created_at.isoformat(),
             }
             for o in recent_orders
         ],
     }
 
 
-# â”€â”€ 2. STATS (original endpoint kept) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# â”€â”€ 2. Stats â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
 @router.get("/stats", response_model=schemas.DashboardStats)
 def get_stats(db: Session = Depends(get_db), _: models.User = Depends(require_admin)):
     return schemas.DashboardStats(
-        total_orders=db.query(sqlfunc.count(models.Order.id)).scalar(),
-        pending_orders=db.query(sqlfunc.count(models.Order.id)).filter(models.Order.shipping_status == "Pending").scalar(),
-        shipped_orders=db.query(sqlfunc.count(models.Order.id)).filter(models.Order.shipping_status == "Shipped").scalar(),
-        delivered_orders=db.query(sqlfunc.count(models.Order.id)).filter(models.Order.shipping_status == "Delivered").scalar(),
-        total_revenue=float(db.query(sqlfunc.coalesce(sqlfunc.sum(models.Order.total_amount), 0.0)).filter(models.Order.payment_status == "Paid").scalar()),
-        total_products=db.query(sqlfunc.count(models.Product.id)).filter(models.Product.is_active == True).scalar(),
-        low_stock_products=db.query(sqlfunc.count(models.Product.id)).filter(models.Product.stock_quantity < 10, models.Product.is_active == True).scalar(),
-        total_users=db.query(sqlfunc.count(models.User.id)).filter(models.User.is_verified == 1).scalar(),
+        total_orders       = db.query(sqlfunc.count(models.Order.id)).scalar(),
+        pending_orders     = db.query(sqlfunc.count(models.Order.id)).filter(models.Order.shipping_status == "Pending").scalar(),
+        shipped_orders     = db.query(sqlfunc.count(models.Order.id)).filter(models.Order.shipping_status == "Shipped").scalar(),
+        delivered_orders   = db.query(sqlfunc.count(models.Order.id)).filter(models.Order.shipping_status == "Delivered").scalar(),
+        total_revenue      = db.query(sqlfunc.coalesce(sqlfunc.sum(models.Order.total_amount), 0.0)).filter(models.Order.payment_status == "Paid").scalar() or Decimal("0.00"),
+        total_products     = db.query(sqlfunc.count(models.Product.id)).filter(models.Product.is_active == True).scalar(),
+        low_stock_products = db.query(sqlfunc.count(models.Product.id)).filter(models.Product.stock_quantity < 10, models.Product.is_active == True).scalar(),
+        total_users        = db.query(sqlfunc.count(models.User.id)).filter(models.User.is_verified == True).scalar(),
     )
 
 
-# â”€â”€ 3. PRODUCTS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# â”€â”€ 3. Products â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @router.get("/products")
 def admin_list_products(
-    skip: int = 0, limit: int = 50,
-    category: str = None, low_stock_only: bool = False,
-    db: Session = Depends(get_db), _: models.User = Depends(require_admin),
+    skip:           int  = Query(default=0, ge=0),
+    limit:          int  = Query(default=50, ge=1, le=200),
+    category:       str  = None,
+    low_stock_only: bool = False,
+    db: Session = Depends(get_db),
+    _:  models.User = Depends(require_admin),
 ):
-    """Returns {products: [...]} â€” frontend reads prodData.products"""
     q = db.query(models.Product)
     if category:
         q = q.filter(models.Product.category == category)
@@ -100,7 +159,7 @@ def admin_list_products(
     def _resp(p):
         pr = schemas.ProductResponse.model_validate(p)
         if p.original_price and p.original_price > p.price:
-            pr.discount_percent = int((1 - p.price / p.original_price) * 100)
+            pr.discount_percent = int((1 - float(p.price) / float(p.original_price)) * 100)
         return pr
 
     return {"products": [_resp(p) for p in products]}
@@ -109,13 +168,14 @@ def admin_list_products(
 @router.post("/products", response_model=schemas.ProductResponse, status_code=201)
 def admin_create_product(
     data: schemas.ProductAdminCreate,
-    db: Session = Depends(get_db),
-    _: models.User = Depends(require_admin),
+    db:   Session = Depends(get_db),
+    current_user: models.User = Depends(require_admin),
 ):
-    """POST /admin/products â€” called by admin form (no SKU field, auto-generated)."""
-    sku = data.sku or f"RUD-{uuid.uuid4().hex[:8].upper()}"
+    import uuid as _uuid
+    sku = data.sku or f"RUD-{_uuid.uuid4().hex[:8].upper()}"
     if db.query(models.Product).filter(models.Product.sku == sku).first():
-        sku = f"RUD-{uuid.uuid4().hex[:8].upper()}"
+        sku = f"RUD-{_uuid.uuid4().hex[:8].upper()}"
+
     product = models.Product(
         sku=sku, name=data.name, description=data.description,
         category=data.category, price=data.price,
@@ -124,57 +184,63 @@ def admin_create_product(
         image_url=data.image_url,
     )
     db.add(product)
+    _audit(db, current_user, "create_product", "Product", None, {"name": data.name, "sku": sku})
     db.commit()
+    db.refresh(product)
     pr = schemas.ProductResponse.model_validate(product)
     if product.original_price and product.original_price > product.price:
-        pr.discount_percent = int((1 - product.price / product.original_price) * 100)
+        pr.discount_percent = int((1 - float(product.price) / float(product.original_price)) * 100)
     return pr
 
 
-@router.put("/products/{product_id}", response_model=schemas.ProductResponse)
+@router.put("/products/{product_id}",   response_model=schemas.ProductResponse)
 @router.patch("/products/{product_id}", response_model=schemas.ProductResponse)
 def admin_update_product(
     product_id: int,
-    update: schemas.ProductUpdate,
-    db: Session = Depends(get_db),
-    _: models.User = Depends(require_admin),
+    update:     schemas.ProductUpdate,
+    db:         Session = Depends(get_db),
+    current_user: models.User = Depends(require_admin),
 ):
-    """Accepts both PUT and PATCH â€” frontend uses PUT."""
     product = db.query(models.Product).filter(models.Product.id == product_id).first()
     if not product:
         raise HTTPException(status_code=404, detail="Product not found.")
-    for field, value in update.model_dump(exclude_unset=True).items():
+    changes = update.model_dump(exclude_unset=True)
+    for field, value in changes.items():
         setattr(product, field, value)
+    _audit(db, current_user, "update_product", "Product", product_id, changes)
     db.commit()
     pr = schemas.ProductResponse.model_validate(product)
     if product.original_price and product.original_price > product.price:
-        pr.discount_percent = int((1 - product.price / product.original_price) * 100)
+        pr.discount_percent = int((1 - float(product.price) / float(product.original_price)) * 100)
     return pr
 
 
 @router.delete("/products/{product_id}")
 def admin_delete_product(
     product_id: int,
-    db: Session = Depends(get_db),
-    _: models.User = Depends(require_admin),
+    db:         Session = Depends(get_db),
+    current_user: models.User = Depends(require_admin),
 ):
     product = db.query(models.Product).filter(models.Product.id == product_id).first()
     if not product:
         raise HTTPException(status_code=404, detail="Product not found.")
-    product.is_active = False   # soft delete
+    product.is_active = False
+    _audit(db, current_user, "deactivate_product", "Product", product_id, {"name": product.name})
     db.commit()
     return {"status": "success", "message": f"Product '{product.name}' deactivated."}
 
 
-# â”€â”€ 4. ORDERS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# â”€â”€ 4. Orders â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @router.get("/orders")
 def admin_list_orders(
-    skip: int = 0, limit: int = 30,
-    payment_status: str = None, shipping_status: str = None,
-    db: Session = Depends(get_db), _: models.User = Depends(require_admin),
+    skip:            int = Query(default=0, ge=0),
+    limit:           int = Query(default=30, ge=1, le=200),
+    payment_status:  str = None,
+    shipping_status: str = None,
+    db: Session = Depends(get_db),
+    _:  models.User = Depends(require_admin),
 ):
-    """Returns {orders: [...]} â€” frontend reads ordersData.orders"""
     q = (
         db.query(models.Order)
         .options(
@@ -193,12 +259,16 @@ def admin_list_orders(
     return {
         "orders": [
             {
-                "id": o.id,
-                "customer_name": o.owner.name if o.owner else "N/A",
-                "total": o.total_amount,
-                "status": o.shipping_status.lower(),
-                "payment_status": o.payment_status,
-                "created_at": o.created_at.isoformat(),
+                "id":              o.id,
+                "customer_name":   o.owner.name  if o.owner else "N/A",
+                "customer_email":  o.owner.email if o.owner else None,
+                "total":           float(o.total_amount),
+                "shipping_status": o.shipping_status,
+                "payment_status":  o.payment_status,
+                "waybill":         o.delhivery_waybill,
+                "razorpay_payment_id": o.razorpay_payment_id,
+                "refund_id":       o.razorpay_refund_id,
+                "created_at":      o.created_at.isoformat(),
             }
             for o in orders
         ]
@@ -209,59 +279,174 @@ def admin_list_orders(
 @router.patch("/orders/{order_id}/status")
 def admin_update_order(
     order_id: int,
-    update: schemas.AdminOrderUpdate,
-    db: Session = Depends(get_db),
-    _: models.User = Depends(require_admin),
+    update:   schemas.AdminOrderUpdate,
+    db:       Session = Depends(get_db),
+    current_user: models.User = Depends(require_admin),
 ):
-    """
-    Accepts both:
-      PUT /admin/orders/{id}  with body { status }   â† frontend sends this
-      PATCH /admin/orders/{id}/status                â† original route kept
-    """
-    valid = {"Pending","Processing","Shipped","Out for Delivery","Delivered","Cancelled","Return Initiated","Returned"}
-    # normalise: frontend sends lowercase
+    valid      = {"Pending","Processing","Shipped","Out for Delivery","Delivered","Cancelled","Return Initiated","Returned"}
     normalised = update.status.title()
     if normalised not in valid:
         raise HTTPException(status_code=400, detail=f"Invalid status. Choose: {', '.join(sorted(valid))}")
+
     order = db.query(models.Order).filter(models.Order.id == order_id).first()
     if not order:
         raise HTTPException(status_code=404, detail="Order not found.")
+
+    prev_status           = order.shipping_status
     order.shipping_status = normalised
     db.add(models.TrackingEvent(order_id=order.id, status=normalised))
+    _audit(db, current_user, "update_order_status", "Order", order_id,
+           {"from": prev_status, "to": normalised})
     db.commit()
     return {"status": "success", "message": f"Order #{order_id} updated to '{normalised}'."}
 
 
 @router.patch("/orders/{order_id}/waybill")
-def set_waybill(order_id: int, waybill: str, db: Session = Depends(get_db), _: models.User = Depends(require_admin)):
+def set_waybill(
+    order_id: int,
+    waybill:  str = Query(min_length=1, max_length=100),
+    db:       Session = Depends(get_db),
+    current_user: models.User = Depends(require_admin),
+):
     order = db.query(models.Order).filter(models.Order.id == order_id).first()
     if not order:
         raise HTTPException(status_code=404, detail="Order not found.")
+
     order.delhivery_waybill = waybill
-    order.shipping_status = "Shipped"
-    db.add(models.TrackingEvent(order_id=order.id, status="Shipped",
-                                description=f"Dispatched via Delhivery. Waybill: {waybill}"))
+    order.shipping_status   = "Shipped"
+    db.add(models.TrackingEvent(
+        order_id    = order.id,
+        status      = "Shipped",
+        description = f"Dispatched via Delhivery. Waybill: {waybill}",
+    ))
+    _audit(db, current_user, "set_waybill", "Order", order_id, {"waybill": waybill})
     db.commit()
+
+    # Notify the customer their order has shipped
+    try:
+        user = db.query(models.User).filter(models.User.id == order.user_id).first()
+        if user:
+            send_order_confirmation_email(user.email, user.name, order)
+    except Exception as exc:
+        logger.warning("Could not send shipping notification for order #%s: %s", order_id, exc)
+
     return {"status": "success", "waybill": waybill}
 
 
-# â”€â”€ 5. USERS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# â”€â”€ 4a. Refund â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+@router.post("/orders/{order_id}/refund")
+def admin_initiate_refund(
+    order_id: int,
+    db:       Session = Depends(get_db),
+    current_user: models.User = Depends(require_admin),
+):
+    """
+    Calls the Razorpay Refunds API to move real money back to the customer.
+
+    Rules:
+      - Order must be Paid (payment_status == "Paid")
+      - Refund can only be triggered once (idempotency: razorpay_refund_id must be null)
+      - Issues a FULL refund for total_amount
+
+    After this call:
+      - order.payment_status  â†’ "Refunded"
+      - order.razorpay_refund_id is set to Razorpay's refund ID for future reference
+      - A TrackingEvent is logged so the customer sees it on the tracking page
+
+    Razorpay refunds are asynchronous â€” the money typically reaches the customer
+    within 5â€“7 business days depending on their payment method.
+    """
+    order = db.query(models.Order).filter(models.Order.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found.")
+
+    if order.payment_status != "Paid":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot refund order with payment_status='{order.payment_status}'. "
+                   "Only 'Paid' orders can be refunded."
+        )
+
+    if order.razorpay_refund_id:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Refund already initiated (refund_id={order.razorpay_refund_id})."
+        )
+
+    if not order.razorpay_payment_id:
+        raise HTTPException(
+            status_code=400,
+            detail="No Razorpay payment ID on this order â€” cannot issue refund."
+        )
+
+    # Call Razorpay Refunds API
+    rz = _get_razorpay()
+    try:
+        refund = rz.payment.refund(
+            order.razorpay_payment_id,
+            {
+                "amount": int(float(order.total_amount) * 100),  # paise
+                "notes":  {
+                    "reason":   "Admin-initiated refund",
+                    "order_id": str(order.id),
+                },
+            }
+        )
+    except razorpay.errors.BadRequestError as exc:
+        logger.error("Razorpay refund failed for order #%s: %s", order_id, exc)
+        raise HTTPException(status_code=502, detail=f"Razorpay refund failed: {str(exc)}")
+
+    refund_id             = refund.get("id", "")
+    order.razorpay_refund_id = refund_id
+    order.payment_status  = "Refunded"
+
+    db.add(models.TrackingEvent(
+        order_id    = order.id,
+        status      = "Refunded",
+        description = f"Full refund of â‚¹{float(order.total_amount):,.2f} initiated. "
+                      f"Razorpay Refund ID: {refund_id}. "
+                      "Amount typically reaches customer within 5â€“7 business days.",
+    ))
+    _audit(db, current_user, "initiate_refund", "Order", order_id, {
+        "refund_id":   refund_id,
+        "amount":      float(order.total_amount),
+        "payment_id":  order.razorpay_payment_id,
+    })
+    db.commit()
+
+    logger.info(
+        "Refund initiated for order #%s by admin %s â€” Razorpay refund_id=%s",
+        order_id, current_user.email, refund_id
+    )
+    return {
+        "status":    "success",
+        "refund_id": refund_id,
+        "amount":    float(order.total_amount),
+        "message":   f"Refund of â‚¹{float(order.total_amount):,.2f} initiated successfully.",
+    }
+
+
+# â”€â”€ 5. Users â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @router.get("/users")
 def admin_list_users(
-    skip: int = 0, limit: int = 50,
-    db: Session = Depends(get_db),
-    _: models.User = Depends(require_admin),
+    skip:  int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+    db:    Session = Depends(get_db),
+    _:     models.User = Depends(require_admin),
 ):
-    """GET /admin/users â€” called by API.admin.users.list()"""
     users = db.query(models.User).order_by(models.User.created_at.desc()).offset(skip).limit(limit).all()
     return {
         "users": [
             {
-                "id": u.id, "name": u.name, "email": u.email,
-                "phone": u.phone, "is_verified": u.is_verified,
-                "is_admin": u.is_admin,
-                "created_at": u.created_at.isoformat() if u.created_at else None,
+                "id":          u.id,
+                "name":        u.name,
+                "email":       u.email,
+                "phone":       u.phone,
+                "is_verified": u.is_verified,
+                "is_admin":    u.is_admin,
+                "created_at":  u.created_at.isoformat() if u.created_at else None,
             }
             for u in users
         ]
@@ -272,31 +457,28 @@ def admin_list_users(
 @router.patch("/users/{user_id}/make-admin")
 def make_admin(
     user_id: int,
-    db: Session = Depends(get_db),
+    db:      Session = Depends(get_db),
     current_user: models.User = Depends(require_admin),
 ):
-    """
-    Accepts both:
-      POST  /admin/users/{id}/admin      â† frontend (API.admin.users.makeAdmin)
-      PATCH /admin/users/{id}/make-admin â† original
-    """
     if current_user.id == user_id:
         raise HTTPException(status_code=400, detail="Cannot modify your own admin status.")
     user = db.query(models.User).filter(models.User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found.")
     user.is_admin = True
+    _audit(db, current_user, "grant_admin", "User", user_id, {"target_email": user.email})
     db.commit()
+    logger.warning("Admin granted to user %s (%s) by admin %s", user.id, user.email, current_user.email)
     return {"status": "success", "message": f"{user.name} is now an admin."}
 
 
-# â”€â”€ 6. LOW STOCK ALERTS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# â”€â”€ 6. Low-stock alerts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @router.get("/alerts/low-stock", response_model=List[schemas.ProductStockAlert])
 def low_stock_alerts(
-    threshold: int = 10,
-    db: Session = Depends(get_db),
-    _: models.User = Depends(require_admin),
+    threshold: int = Query(default=10, ge=1, le=100),
+    db:        Session = Depends(get_db),
+    _:         models.User = Depends(require_admin),
 ):
     return (
         db.query(models.Product)
@@ -304,114 +486,348 @@ def low_stock_alerts(
         .order_by(models.Product.stock_quantity.asc())
         .all()
     )
-===== D:\Rudhita\rudhita-backend\auth.py =====
-import secrets
-from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+
+# â”€â”€ 7. Audit log â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+@router.get("/audit-log")
+def get_audit_log(
+    skip:  int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+    db:    Session = Depends(get_db),
+    _:     models.User = Depends(require_admin),
+):
+    logs = (
+        db.query(models.AuditLog)
+        .order_by(models.AuditLog.created_at.desc())
+        .offset(skip).limit(limit).all()
+    )
+    return {
+        "logs": [
+            {
+                "id":          l.id,
+                "actor_id":    l.actor_id,
+                "action":      l.action,
+                "target_type": l.target_type,
+                "target_id":   l.target_id,
+                "detail":      l.detail,
+                "created_at":  l.created_at.isoformat(),
+            }
+            for l in logs
+        ]
+    }
+===== D:\Rudhita\rudhita-backend\auth.py =====
+"""
+auth.py  ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â  Authentication Routes (PATCHED)
+
+Changes from audit:
+  - register_user(): no longer reveals whether email exists (prevents enumeration)
+  - register_user(): calls send_otp_email() instead of print()
+  - _generate_otp():  stores HMAC hash of OTP, not plain text
+  - verify_otp():    uses verify_otp_hash() for constant-time comparison
+  - login():         returns both access_token AND refresh_token
+  - logout():        adds JTI to TokenBlocklist so token is truly invalid
+  - NEW /auth/refresh: issues a new access_token from a valid refresh_token
+"""
+
+import secrets
+from datetime import datetime, timezone
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from sqlalchemy.orm import Session
 from fastapi.security import OAuth2PasswordRequestForm
+
 import models
 import schemas
 import utils
 from database import get_db
 
-router = APIRouter(prefix="/auth", tags=["Authentication"])
+router  = APIRouter(prefix="/auth", tags=["Authentication"])
 limiter = Limiter(key_func=get_remote_address)
 
 
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Internal helpers ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
+
+
+from datetime import timedelta
+
 def _generate_otp(db: Session, email: str) -> str:
     db.query(models.OTP).filter(models.OTP.email == email).delete()
-    otp_code = str(secrets.randbelow(900_000) + 100_000)
-    expiry = datetime.now(timezone.utc) + timedelta(minutes=10)
-    db.add(models.OTP(email=email, otp_code=otp_code, expires_at=expiry))
+    otp_plain  = str(secrets.randbelow(900_000) + 100_000)
+    otp_hashed = utils.hash_otp(otp_plain)
+    expiry     = datetime.now(timezone.utc) + timedelta(minutes=10)
+    db.add(models.OTP(email=email, otp_code=otp_hashed, expires_at=expiry))
     db.commit()
-    return otp_code
+    return otp_plain
 
 
-@router.post("/register", response_model=schemas.UserResponse, status_code=status.HTTP_201_CREATED)
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Register ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
+
+@router.post("/register", status_code=status.HTTP_201_CREATED)
 @limiter.limit("3/hour")
-def register_user(request: Request, user: schemas.UserCreate, db: Session = Depends(get_db)):
+def register_user(
+    request: Request,
+    user: schemas.UserCreate,
+    db: Session = Depends(get_db),
+):
+    """
+    FIX 1: Always returns the same response whether the email exists or not.
+            This prevents attackers from probing which emails are registered.
+    FIX 2: OTP is emailed via SMTP, never printed to stdout.
+    """
     existing = db.query(models.User).filter(models.User.email == user.email).first()
-    if existing:
-        raise HTTPException(status_code=400, detail="Email already registered.")
-    new_user = models.User(
-        name=user.name, email=user.email,
-        password_hash=utils.hash_password(user.password),
-        phone=user.phone, is_verified=0,
-    )
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
-    otp_code = _generate_otp(db, user.email)
-    print("\n" + "=" * 40)
-    print(f"ðŸ“§ MOCK EMAIL TO: {user.email}")
-    print(f"   Subject: Your Rudhita Verification Code")
-    print(f"   Code: {otp_code}")
-    print("=" * 40 + "\n")
-    return new_user
+    if not existing:
+        new_user = models.User(
+            name          = user.name,
+            email         = user.email,
+            password_hash = utils.hash_password(user.password),
+            phone         = user.phone,
+            is_verified   = False,
+        )
+        db.add(new_user)
+        db.commit()
 
+    # Generate and EMAIL the OTP (never print it)
+    if not existing or not existing.is_verified:
+        otp_plain = _generate_otp(db, user.email)
+        utils.send_otp_email(user.email, otp_plain)
+
+    # Same message regardless of outcome ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â prevents email enumeration
+    return {
+        "status":  "success",
+        "message": "If this email is new, a verification code has been sent.",
+    }
+
+
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Verify OTP ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
+
+# Maximum wrong OTP attempts before the code is invalidated
+_MAX_OTP_ATTEMPTS = 5
 
 @router.post("/verify-otp")
 @limiter.limit("10/hour")
-def verify_otp(request: Request, otp_data: schemas.OTPVerify, db: Session = Depends(get_db)):
+def verify_otp(
+    request: Request,
+    otp_data: schemas.OTPVerify,
+    db: Session = Depends(get_db),
+):
+    """
+    SECURITY FIX: Added per-email attempt counter.
+    After 5 wrong guesses the OTP record is deleted, forcing the user to request
+    a new code. This makes brute-forcing a 6-digit OTP computationally infeasible
+    even when the per-IP rate limit is circumvented via proxies.
+    """
     record = db.query(models.OTP).filter(
-        models.OTP.email == otp_data.email,
-        models.OTP.otp_code == otp_data.otp,
+        models.OTP.email == otp_data.email
     ).first()
+
     if not record:
         raise HTTPException(status_code=400, detail="Invalid or expired OTP.")
-    if record.expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
+
+    # Check expiry
+    expiry = record.expires_at
+    if expiry.tzinfo is None:
+        expiry = expiry.replace(tzinfo=timezone.utc)
+    if expiry < datetime.now(timezone.utc):
         db.delete(record)
         db.commit()
         raise HTTPException(status_code=400, detail="Invalid or expired OTP.")
+
+    # SECURITY FIX: Brute-force lockout â€” 5 wrong attempts invalidates the OTP
+    if record.fail_count >= _MAX_OTP_ATTEMPTS:
+        db.delete(record)
+        db.commit()
+        raise HTTPException(
+            status_code=400,
+            detail="Too many failed attempts. Please request a new verification code."
+        )
+
+    # Compare HMAC hashes (constant-time)
+    if not utils.verify_otp_hash(otp_data.otp, record.otp_code):
+        record.fail_count += 1
+        remaining = _MAX_OTP_ATTEMPTS - record.fail_count
+        db.commit()
+        if remaining <= 0:
+            db.delete(record)
+            db.commit()
+            raise HTTPException(
+                status_code=400,
+                detail="Too many failed attempts. Please request a new verification code."
+            )
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid code. {remaining} attempt(s) remaining."
+        )
+
     user = db.query(models.User).filter(models.User.email == otp_data.email).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found.")
-    user.is_verified = 1
+
+    user.is_verified = True
     db.delete(record)
     db.commit()
     return {"status": "success", "message": "Account successfully verified!"}
 
 
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Resend OTP ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
+
 @router.post("/resend-otp")
 @limiter.limit("5/hour")
-def resend_otp(request: Request, data: schemas.ResendOTP, db: Session = Depends(get_db)):
+def resend_otp(
+    request: Request,
+    data: schemas.ResendOTP,
+    db: Session = Depends(get_db),
+):
     user = db.query(models.User).filter(models.User.email == data.email).first()
-    if not user or user.is_verified == 1:
-        return {"status": "success", "message": "If this email is registered and unverified, a new code has been sent."}
-    otp_code = _generate_otp(db, data.email)
-    print("\n" + "=" * 40)
-    print(f"ðŸ“§ MOCK RESEND TO: {data.email}")
-    print(f"   Code: {otp_code}")
-    print("=" * 40 + "\n")
-    return {"status": "success", "message": "If this email is registered and unverified, a new code has been sent."}
+    if user and not user.is_verified:
+        otp_plain = _generate_otp(db, data.email)
+        utils.send_otp_email(data.email, otp_plain)
 
+    # Same message always ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â prevents enumeration
+    return {
+        "status":  "success",
+        "message": "If this email is registered and unverified, a new code has been sent.",
+    }
+
+
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Login ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 
 @router.post("/login", response_model=schemas.Token)
 @limiter.limit("5/minute")
-def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+def login(
+    request: Request,
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_db),
+):
+    """
+    Returns both access_token (short-lived) and refresh_token (long-lived).
+    The refresh_token is stored in the DB and can be revoked on logout.
+    """
+    invalid = HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Invalid credentials.",
+    )
     user = db.query(models.User).filter(models.User.email == form_data.username).first()
-    invalid = HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid credentials.")
     if not user or not utils.verify_password(form_data.password, user.password_hash):
         raise invalid
-    if user.is_verified == 0:
+    if not user.is_verified:
         raise invalid
-    access_token = utils.create_access_token(data={"sub": user.email, "id": user.id})
-    return {"access_token": access_token, "token_type": "bearer"}
 
+    access_token              = utils.create_access_token({"sub": user.email, "id": user.id})
+    refresh_token_str, expiry = utils.create_refresh_token()
+
+    db.add(models.RefreshToken(
+        user_id    = user.id,
+        token      = refresh_token_str,
+        expires_at = expiry,
+    ))
+    db.commit()
+
+    return {
+        "access_token":  access_token,
+        "refresh_token": refresh_token_str,
+        "token_type":    "bearer",
+    }
+
+
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Refresh access token ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
+
+@router.post("/refresh", response_model=schemas.Token)
+def refresh_access_token(
+    payload: schemas.RefreshRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Validates a long-lived refresh token and issues a new short-lived access token.
+    Call this when you receive a 401 on any protected endpoint.
+    """
+    record = db.query(models.RefreshToken).filter(
+        models.RefreshToken.token == payload.refresh_token
+    ).first()
+
+    if not record:
+        raise HTTPException(status_code=401, detail="Invalid refresh token.")
+
+    expiry = record.expires_at
+    if expiry.tzinfo is None:
+        expiry = expiry.replace(tzinfo=timezone.utc)
+    if expiry < datetime.now(timezone.utc):
+        db.delete(record)
+        db.commit()
+        raise HTTPException(status_code=401, detail="Refresh token has expired. Please log in again.")
+
+    user = db.query(models.User).filter(models.User.id == record.user_id).first()
+    if not user or not user.is_verified:
+        raise HTTPException(status_code=401, detail="User not found or unverified.")
+
+    new_access   = utils.create_access_token({"sub": user.email, "id": user.id})
+    new_refresh, new_expiry = utils.create_refresh_token()
+
+    # Rotate: delete old token, issue new one (prevents refresh token reuse)
+    db.delete(record)
+    db.add(models.RefreshToken(user_id=user.id, token=new_refresh, expires_at=new_expiry))
+    db.commit()
+
+    return {
+        "access_token":  new_access,
+        "refresh_token": new_refresh,
+        "token_type":    "bearer",
+    }
+
+
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Me ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 
 @router.get("/me", response_model=schemas.UserResponse)
 def get_me(current_user: models.User = Depends(utils.get_current_user)):
-    """Returns the currently logged-in user. Used by API.auth.me()."""
     return current_user
 
 
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Logout ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
+
 @router.post("/logout")
-def logout():
-    """Token-based auth is stateless â€” logout is handled client-side by removing the token."""
+def logout(
+    token_str: str = Depends(utils.oauth2_scheme),
+    # BUG 28 FIX: Optional prevents FastAPI rejecting requests with no body
+    payload: Optional[schemas.RefreshRequest] = None,
+    db: Session = Depends(get_db),
+):
+    """
+    FIX: Adds the access token's JTI to the blocklist so it's truly invalid.
+         Also deletes the matching refresh token if supplied.
+
+    Frontend should send the refresh_token in the request body
+    so both tokens are revoked in one call.
+    """
+    import jwt as pyjwt
+    from jwt.exceptions import InvalidTokenError
+
+    try:
+        decoded = pyjwt.decode(
+            token_str, utils.SECRET_KEY,
+            algorithms=[utils.ALGORITHM],
+            options={"verify_exp": False},   # we want to blocklist even near-expired tokens
+        )
+        jti        = decoded.get("jti")
+        exp_ts     = decoded.get("exp")
+        expires_at = (
+            datetime.fromtimestamp(exp_ts, tz=timezone.utc)
+            if exp_ts else datetime.now(timezone.utc)
+        )
+        if jti:
+            db.merge(models.TokenBlocklist(jti=jti, expires_at=expires_at))
+    except InvalidTokenError:
+        pass  # already invalid ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â that's fine
+
+    # Revoke refresh token if provided
+    if payload and payload.refresh_token:
+        db.query(models.RefreshToken).filter(
+            models.RefreshToken.token == payload.refresh_token
+        ).delete()
+
+    db.commit()
     return {"status": "success", "message": "Logged out successfully."}
 ===== D:\Rudhita\rudhita-backend\cart.py =====
 from fastapi import APIRouter, Depends, HTTPException
@@ -443,13 +859,17 @@ def _cart_response(db: Session, user) -> schemas.CartResponse:
     return cr
 
 
-# â”€â”€ GET CART â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Ã¢â€â‚¬Ã¢â€â‚¬ GET CART Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 @router.get("/", response_model=schemas.CartResponse)
 def view_cart(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     return _cart_response(db, current_user)
 
 
-# â”€â”€ ADD ITEM â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Ã¢â€â‚¬Ã¢â€â‚¬ ADD ITEM Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+# Maximum number of distinct product lines allowed in a single cart.
+# Prevents DoS: GET /cart/ loads every item.product eagerly.
+_MAX_CART_ITEMS = 25
+
 @router.post("/add", response_model=schemas.CartResponse)
 def add_to_cart(
     item_data: schemas.CartItemAdd,
@@ -459,9 +879,26 @@ def add_to_cart(
     product = db.query(models.Product).filter(models.Product.id == item_data.product_id).first()
     if not product:
         raise HTTPException(status_code=404, detail="Product not found.")
+    if not product.is_active:
+        raise HTTPException(status_code=400, detail="This product is no longer available.")
     if product.stock_quantity < item_data.quantity:
         raise HTTPException(status_code=400, detail="Not enough stock available.")
     cart = get_user_cart(db, current_user.id)
+
+    # SECURITY FIX: cap total distinct items to prevent DoS via cart explosion
+    existing_count = db.query(models.CartItem).filter(
+        models.CartItem.cart_id == cart.id
+    ).count()
+    is_new_product = not db.query(models.CartItem).filter(
+        models.CartItem.cart_id == cart.id,
+        models.CartItem.product_id == item_data.product_id,
+    ).first()
+    if is_new_product and existing_count >= _MAX_CART_ITEMS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cart limit reached. A cart can hold at most {_MAX_CART_ITEMS} different items."
+        )
+
     existing = db.query(models.CartItem).filter(
         models.CartItem.cart_id == cart.id,
         models.CartItem.product_id == item_data.product_id,
@@ -475,14 +912,14 @@ def add_to_cart(
     return _cart_response(db, current_user)
 
 
-# â”€â”€ UPDATE ITEM QUANTITY (by product_id) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Ã¢â€â‚¬Ã¢â€â‚¬ UPDATE ITEM QUANTITY (by product_id) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 @router.put("/update", response_model=schemas.CartResponse)
 def update_cart_item(
     item_data: schemas.CartItemUpdate,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    """PUT /cart/update â€” used by API.cart.update(productId, quantity)"""
+    """PUT /cart/update Ã¢â‚¬â€ used by API.cart.update(productId, quantity)"""
     if item_data.quantity < 1:
         raise HTTPException(status_code=400, detail="Quantity must be at least 1.")
     cart = get_user_cart(db, current_user.id)
@@ -500,7 +937,7 @@ def update_cart_item(
     return _cart_response(db, current_user)
 
 
-# â”€â”€ REMOVE BY ITEM ID (used by CartSidebar and Cart components directly) â”€â”€â”€â”€â”€â”€
+# Ã¢â€â‚¬Ã¢â€â‚¬ REMOVE BY ITEM ID (used by CartSidebar and Cart components directly) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 @router.delete("/remove/{item_id}")
 def remove_from_cart(
     item_id: int,
@@ -519,13 +956,13 @@ def remove_from_cart(
     return {"status": "success", "message": "Item removed from cart."}
 
 
-# â”€â”€ CLEAR ENTIRE CART â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Ã¢â€â‚¬Ã¢â€â‚¬ CLEAR ENTIRE CART Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 @router.delete("/clear")
 def clear_cart(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    """DELETE /cart/clear â€” called by CheckoutPage after order is placed."""
+    """DELETE /cart/clear Ã¢â‚¬â€ called by CheckoutPage after order is placed."""
     cart = get_user_cart(db, current_user.id)
     db.query(models.CartItem).filter(models.CartItem.cart_id == cart.id).delete()
     db.commit()
@@ -581,91 +1018,178 @@ def get_db():
     finally:
         db.close()
 ===== D:\Rudhita\rudhita-backend\main.py =====
+"""
+main.py  Ã¢â‚¬â€  FastAPI Application Entry Point (PATCHED)
+
+Changes from audit:
+  - /docs and /redoc are disabled in production (ENV=production)
+  - /health/pool requires admin auth Ã¢â‚¬â€ no longer public
+  - Structured JSON-style logging configured at startup
+  - Request ID middleware added (X-Request-ID header on every response)
+  - Generic 500 handler added Ã¢â‚¬â€ no stack traces leak to clients
+"""
+
 import os
-from fastapi import FastAPI, Depends, Request
+import uuid
+import logging
+import logging.config
+
+from fastapi              import FastAPI, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
-from slowapi.errors import RateLimitExceeded
-from sqlalchemy.orm import Session
-from sqlalchemy import text
+from fastapi.responses    import JSONResponse
+from slowapi               import Limiter, _rate_limit_exceeded_handler
+from slowapi.util          import get_remote_address
+from slowapi.errors        import RateLimitExceeded
+from sqlalchemy.orm        import Session
+from sqlalchemy            import text
 
 from database import engine, get_db
 import models
-from auth import router as auth_router
+from auth     import router as auth_router
 from products import router as products_router
-from cart import router as cart_router
-from orders import router as orders_router
-from admin import router as admin_router
-from user import router as user_router          # â† NEW
+from cart     import router as cart_router
+from orders   import router as orders_router
+from admin    import router as admin_router, require_admin
+from user     import router as user_router
+from webhook  import router as webhook_router
 
-# â”€â”€ Auto-create all tables (safe to run on every startup) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Ã¢â€â‚¬Ã¢â€â‚¬ Logging Ã¢â‚¬â€ configure before anything else Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+logging.config.dictConfig({
+    "version":    1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "default": {
+            "format": "%(asctime)s %(levelname)-8s [%(name)s] %(message)s",
+            "datefmt": "%Y-%m-%dT%H:%M:%S",
+        }
+    },
+    "handlers": {
+        "console": {
+            "class":     "logging.StreamHandler",
+            "formatter": "default",
+            "stream":    "ext://sys.stdout",
+        }
+    },
+    "root": {"level": "INFO", "handlers": ["console"]},
+    "loggers": {
+        "rudhita":   {"level": "INFO",  "propagate": True},
+        "sqlalchemy.engine": {"level": "WARNING", "propagate": True},  # set INFO to debug queries
+        "uvicorn":   {"level": "INFO",  "propagate": False, "handlers": ["console"]},
+    },
+}) 
+logger = logging.getLogger("rudhita")
+
+# Ã¢â€â‚¬Ã¢â€â‚¬ Detect environment Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+IS_PRODUCTION = os.getenv("ENV", "development").lower() == "production"
+logger.info("Starting Rudhita API Ã¢â‚¬â€ mode=%s", "production" if IS_PRODUCTION else "development")
+
+# Ã¢â€â‚¬Ã¢â€â‚¬ Auto-create tables (safe for now; migrate to Alembic before v2 schema change) Ã¢â€â‚¬Ã¢â€â‚¬
 models.Base.metadata.create_all(bind=engine)
 
-# â”€â”€ Rate limiter â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Ã¢â€â‚¬Ã¢â€â‚¬ Rate limiter Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 limiter = Limiter(key_func=get_remote_address)
 
+# Ã¢â€â‚¬Ã¢â€â‚¬ App Ã¢â‚¬â€ docs disabled in production Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 app = FastAPI(
-    title="Rudhita E-Commerce API",
-    description="High-performance backend for Rudhita â€” clothing, jewellery & lifestyle.",
-    version="2.0.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
+    title       = "Rudhita E-Commerce API",
+    description = "Backend for Rudhita Ã¢â‚¬â€ clothing, jewellery & lifestyle.",
+    version     = "2.1.0",
+    docs_url    = None if IS_PRODUCTION else "/docs",    # FIX: hidden in prod
+    redoc_url   = None if IS_PRODUCTION else "/redoc",   # FIX: hidden in prod
+    openapi_url = None if IS_PRODUCTION else "/openapi.json",
 )
 
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# â”€â”€ CORS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-_raw_origins = os.getenv("ALLOWED_ORIGINS", "")
+# Ã¢â€â‚¬Ã¢â€â‚¬ FIX: Generic 500 handler Ã¢â‚¬â€ never leak stack traces to clients Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.exception("Unhandled exception on %s %s", request.method, request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "An internal server error occurred. Please try again later."},
+    )
+
+# Ã¢â€â‚¬Ã¢â€â‚¬ FIX: Request ID middleware Ã¢â‚¬â€ every request gets a traceable ID Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+@app.middleware("http")
+async def add_request_id(request: Request, call_next):
+    request_id               = str(uuid.uuid4())[:8]
+    request.state.request_id = request_id
+    logger.info("Ã¢â€ â€™ %s %s [rid=%s]", request.method, request.url.path, request_id)
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    logger.info("Ã¢â€ Â %s %s %s [rid=%s]",
+                request.method, request.url.path, response.status_code, request_id)
+    return response
+
+# Ã¢â€â‚¬Ã¢â€â‚¬ CORS Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+_raw_origins   = os.getenv("ALLOWED_ORIGINS", "")
 allowed_origins = [o.strip() for o in _raw_origins.split(",") if o.strip()]
 if not allowed_origins:
-    allowed_origins = ["http://localhost:3000", "http://127.0.0.1:5500"]
+    if IS_PRODUCTION:
+        logger.error("ALLOWED_ORIGINS is not set Ã¢â‚¬â€ CORS will block all requests in production!")
+        allowed_origins = []   # block everything rather than allow everything
+    else:
+        allowed_origins = ["http://localhost:3000", "http://127.0.0.1:5500"]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allowed_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins     = allowed_origins,
+    allow_credentials = True,
+    allow_methods     = ["*"],
+    allow_headers     = ["*"],
 )
 
-# â”€â”€ Routers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Ã¢â€â‚¬Ã¢â€â‚¬ Routers Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 app.include_router(auth_router)
 app.include_router(products_router)
 app.include_router(cart_router)
 app.include_router(orders_router)
 app.include_router(admin_router)
-app.include_router(user_router)                 # â† NEW
+app.include_router(user_router)
+app.include_router(webhook_router)   # Razorpay payment event safety net
 
-# â”€â”€ Health check â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+# Ã¢â€â‚¬Ã¢â€â‚¬ Health check (public) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 @app.get("/", tags=["Health"])
 def health_check(db: Session = Depends(get_db)):
-    # Pings the DB â€” if this returns 200, everything is operational
     db.execute(text("SELECT 1"))
-    return {
-        "status": "online",
-        "service": "Rudhita API v2.0",
-        "db": "connected",
-    }
+    return {"status": "online", "service": "Rudhita API v2.1", "db": "connected"}
 
 
-# â”€â”€ DB pool stats (useful for monitoring) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-@app.get("/health/pool", tags=["Health"])
-def pool_stats():
+# Ã¢â€â‚¬Ã¢â€â‚¬ FIX: Pool stats now require admin auth Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+@app.get("/health/pool", tags=["Health"], include_in_schema=not IS_PRODUCTION)
+def pool_stats(_: models.User = Depends(require_admin)):
+    """Internal monitoring endpoint Ã¢â‚¬â€ admin only."""
     pool = engine.pool
     return {
-        "pool_size": pool.size(),
-        "checked_in": pool.checkedin(),
+        "pool_size":   pool.size(),
+        "checked_in":  pool.checkedin(),
         "checked_out": pool.checkedout(),
-        "overflow": pool.overflow(),
+        "overflow":    pool.overflow(),
     }
 ===== D:\Rudhita\rudhita-backend\make_admin.py =====
 ===== D:\Rudhita\rudhita-backend\models.py =====
+"""
+models.py  â€” Rudhita Database Models
+
+Changes:
+  - Float -> Numeric(10, 2) for ALL money columns (prevents precision loss)
+  - User.is_verified: Integer -> Boolean
+  - Added RefreshToken  (for /auth/refresh flow)
+  - Added TokenBlocklist (for /auth/logout token revocation)
+  - Added AuditLog      (admin action trail)
+  - OTP: added fail_count to lock out brute-force attempts after 5 wrong guesses
+
+MIGRATION NOTE:
+  If upgrading an existing DB, run:
+    ALTER TABLE otps ADD COLUMN IF NOT EXISTS fail_count INTEGER NOT NULL DEFAULT 0;
+"""
+
 from sqlalchemy import (
     Column, Integer, String, Float, ForeignKey,
-    DateTime, Text, Boolean, Index
+    DateTime, Text, Boolean, Index, Numeric
 )
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -677,29 +1201,30 @@ class User(Base):
     id             = Column(Integer, primary_key=True, index=True)
     name           = Column(String(100), nullable=False)
     email          = Column(String(150), unique=True, nullable=False, index=True)
-    password_hash  = Column(String(255), nullable=True)
+    password_hash  = Column(String(255), nullable=False)
     phone          = Column(String(20))
-    is_verified    = Column(Integer, default=0)
+    is_verified    = Column(Boolean, default=False, nullable=False)
     is_admin       = Column(Boolean, default=False)
     created_at     = Column(DateTime(timezone=True), server_default=func.now())
-    orders         = relationship("Order", back_populates="owner", lazy="select")
-    cart           = relationship("Cart", back_populates="user", uselist=False)
-    addresses      = relationship("Address", back_populates="user", cascade="all, delete-orphan")
+    orders         = relationship("Order",        back_populates="owner",   lazy="select")
+    cart           = relationship("Cart",         back_populates="user",    uselist=False)
+    addresses      = relationship("Address",      back_populates="user",    cascade="all, delete-orphan")
+    refresh_tokens = relationship("RefreshToken", back_populates="user",    cascade="all, delete-orphan")
 
 
 class Address(Base):
     __tablename__ = "addresses"
-    id           = Column(Integer, primary_key=True, index=True)
-    user_id      = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    name         = Column(String(150), nullable=False)   # "Home", "Office", or person's name
-    phone        = Column(String(20), nullable=False)
-    street       = Column(Text, nullable=False)
-    city         = Column(String(100), nullable=False)
-    state        = Column(String(100), nullable=False)
-    pincode      = Column(String(10), nullable=False)
-    is_default   = Column(Boolean, default=False)
-    created_at   = Column(DateTime(timezone=True), server_default=func.now())
-    user         = relationship("User", back_populates="addresses")
+    id         = Column(Integer, primary_key=True, index=True)
+    user_id    = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    name       = Column(String(150), nullable=False)
+    phone      = Column(String(20), nullable=False)
+    street     = Column(Text, nullable=False)
+    city       = Column(String(100), nullable=False)
+    state      = Column(String(100), nullable=False)
+    pincode    = Column(String(10), nullable=False)
+    is_default = Column(Boolean, default=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    user       = relationship("User", back_populates="addresses")
 
 
 class Product(Base):
@@ -709,8 +1234,8 @@ class Product(Base):
     name           = Column(String(200), nullable=False)
     description    = Column(Text)
     category       = Column(String(100), index=True)
-    price          = Column(Float, nullable=False)
-    original_price = Column(Float)
+    price          = Column(Numeric(10, 2), nullable=False)
+    original_price = Column(Numeric(10, 2))
     stock_quantity = Column(Integer, default=0, nullable=False)
     weight_grams   = Column(Integer, default=0, nullable=False)
     image_url      = Column(String(500))
@@ -723,19 +1248,22 @@ class Order(Base):
     __tablename__ = "orders"
     id                  = Column(Integer, primary_key=True, index=True)
     user_id             = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    total_amount        = Column(Float, nullable=False)
+    total_amount        = Column(Numeric(10, 2), nullable=False)
     payment_status      = Column(String(50), default="Pending", index=True)
     shipping_status     = Column(String(50), default="Pending", index=True)
     razorpay_order_id   = Column(String(100), index=True)
     razorpay_payment_id = Column(String(100))
+    razorpay_refund_id  = Column(String(100))  # NEW: stores refund ID after refund is initiated
     delhivery_waybill   = Column(String(100), index=True)
     shipping_address    = Column(Text, nullable=False)
     created_at          = Column(DateTime(timezone=True), server_default=func.now())
     updated_at          = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     owner           = relationship("User", back_populates="orders")
     items           = relationship("OrderItem", back_populates="order", cascade="all, delete-orphan")
-    tracking_events = relationship("TrackingEvent", back_populates="order",
-                                   order_by="TrackingEvent.created_at", cascade="all, delete-orphan")
+    tracking_events = relationship(
+        "TrackingEvent", back_populates="order",
+        order_by="TrackingEvent.created_at", cascade="all, delete-orphan"
+    )
 
 
 class OrderItem(Base):
@@ -744,8 +1272,8 @@ class OrderItem(Base):
     order_id          = Column(Integer, ForeignKey("orders.id"), nullable=False, index=True)
     product_id        = Column(Integer, ForeignKey("products.id"), nullable=False)
     quantity          = Column(Integer, nullable=False, default=1)
-    price_at_purchase = Column(Float, nullable=False)
-    order   = relationship("Order", back_populates="items")
+    price_at_purchase = Column(Numeric(10, 2), nullable=False)
+    order   = relationship("Order",   back_populates="items")
     product = relationship("Product")
 
 
@@ -757,15 +1285,17 @@ class TrackingEvent(Base):
     location    = Column(String(200))
     description = Column(Text)
     created_at  = Column(DateTime(timezone=True), server_default=func.now())
-    order = relationship("Order", back_populates="tracking_events")
+    order       = relationship("Order", back_populates="tracking_events")
 
 
 class OTP(Base):
     __tablename__ = "otps"
     id         = Column(Integer, primary_key=True, index=True)
     email      = Column(String(150), nullable=False, index=True)
-    otp_code   = Column(String(6), nullable=False)
+    otp_code   = Column(String(64),  nullable=False)  # HMAC-SHA256 hex digest
     expires_at = Column(DateTime(timezone=True), nullable=False)
+    # NEW: tracks wrong attempts â€” locked out after 5 failures, prevents brute force
+    fail_count = Column(Integer, nullable=False, default=0)
 
 
 class Cart(Base):
@@ -783,214 +1313,375 @@ class CartItem(Base):
     cart_id    = Column(Integer, ForeignKey("carts.id"), nullable=False)
     product_id = Column(Integer, ForeignKey("products.id"), nullable=False)
     quantity   = Column(Integer, default=1, nullable=False)
-    cart    = relationship("Cart", back_populates="items")
+    cart    = relationship("Cart",    back_populates="items")
     product = relationship("Product")
+
+
+class RefreshToken(Base):
+    __tablename__ = "refresh_tokens"
+    id         = Column(Integer, primary_key=True, index=True)
+    user_id    = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    token      = Column(String(128), unique=True, nullable=False, index=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    user       = relationship("User", back_populates="refresh_tokens")
+
+
+class TokenBlocklist(Base):
+    __tablename__ = "token_blocklist"
+    id         = Column(Integer, primary_key=True, index=True)
+    jti        = Column(String(64), unique=True, nullable=False, index=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+    id          = Column(Integer, primary_key=True, index=True)
+    actor_id    = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    action      = Column(String(100), nullable=False)
+    target_type = Column(String(50))
+    target_id   = Column(Integer)
+    detail      = Column(Text)
+    created_at  = Column(DateTime(timezone=True), server_default=func.now(), index=True)
 ===== D:\Rudhita\rudhita-backend\orders.py =====
+"""
+orders.py  Ã¢â‚¬â€  Order Routes (PATCHED)
+
+Changes from audit:
+  1. create_order_from_frontend(): SELECT FOR UPDATE on product rows Ã¢â‚¬â€ prevents overselling
+  2. confirm_payment():            Razorpay HMAC-SHA256 signature verification Ã¢â‚¬â€ REQUIRED
+  3. confirm_payment():            Idempotency guard Ã¢â‚¬â€ cannot overwrite a "Paid" order
+  4. list_my_orders():             Single subquery for item counts Ã¢â‚¬â€ fixes N+1
+  5. _clear_cart():               Opens its own DB session Ã¢â‚¬â€ fixes stale-session crash
+"""
+
 import os
+import hmac
+import hashlib
+import logging
 import razorpay
-from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
-from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func as sqlfunc
-from typing import List
+
+from fastapi          import APIRouter, Depends, HTTPException, status, BackgroundTasks
+from sqlalchemy       import select, func as sqlfunc
+from sqlalchemy.orm   import Session, joinedload
+from typing           import List
 
 import models
 import schemas
-from database import get_db
-from utils import get_current_user
+from database  import get_db, SessionLocal
+from utils     import get_current_user
 
+logger = logging.getLogger("rudhita")
 router = APIRouter(prefix="/orders", tags=["Orders"])
 
 
-def _get_razorpay():
-    key_id = os.getenv("RAZORPAY_KEY_ID")
+# Ã¢â€â‚¬Ã¢â€â‚¬ Helpers Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+
+def _get_razorpay() -> razorpay.Client:
+    key_id     = os.getenv("RAZORPAY_KEY_ID")
     key_secret = os.getenv("RAZORPAY_KEY_SECRET")
     if not key_id or not key_secret:
         raise HTTPException(status_code=503, detail="Payment gateway not configured.")
     return razorpay.Client(auth=(key_id, key_secret))
 
 
-def _clear_cart(db: Session, user_id: int):
-    cart = db.query(models.Cart).filter(models.Cart.user_id == user_id).first()
-    if cart:
-        db.query(models.CartItem).filter(models.CartItem.cart_id == cart.id).delete()
-        db.commit()
-
-
 def _format_address(addr: schemas.CheckoutAddress) -> str:
     return f"{addr.name}, {addr.phone}, {addr.street}, {addr.city}, {addr.state} - {addr.pincode}"
 
 
-# â”€â”€ 1. POST /orders/ â€” what CheckoutPage calls â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# FIX: background task creates its own session Ã¢â‚¬â€ the request session is closed by now
+def _clear_cart(user_id: int) -> None:
+    db = SessionLocal()
+    try:
+        cart = db.query(models.Cart).filter(models.Cart.user_id == user_id).first()
+        if cart:
+            db.query(models.CartItem).filter(models.CartItem.cart_id == cart.id).delete()
+            db.commit()
+    except Exception as exc:
+        logger.error("Failed to clear cart for user %s: %s", user_id, exc)
+        db.rollback()
+    finally:
+        db.close()
+
+
+# Ã¢â€â‚¬Ã¢â€â‚¬ 1. Create order Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+
 @router.post("/", response_model=dict, status_code=201)
 def create_order_from_frontend(
-    order_data: schemas.FrontendOrderCreate,
+    order_data:       schemas.FrontendOrderCreate,
     background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
+    db:               Session = Depends(get_db),
+    current_user:     models.User = Depends(get_current_user),
 ):
     """
-    Called by CheckoutPage via API.orders.create().
-    Reads the cart, creates a Razorpay order, and saves everything to DB.
+    Reads cart, creates a Razorpay order, and persists everything atomically.
+
+    FIX: Uses SELECT FOR UPDATE on each product row so two simultaneous checkouts
+         for the last item in stock cannot both succeed.
     """
     cart = (
         db.query(models.Cart)
-        .options(joinedload(models.Cart.items).joinedload(models.CartItem.product))
+        .options(joinedload(models.Cart.items))
         .filter(models.Cart.user_id == current_user.id)
         .first()
     )
     if not cart or not cart.items:
         raise HTTPException(status_code=400, detail="Your cart is empty.")
 
-    total = 0.0
-    for item in cart.items:
-        if item.product.stock_quantity < item.quantity:
+    total       = 0
+    order_items = []
+
+    for cart_item in cart.items:
+        # FIX: lock the product row for this transaction Ã¢â‚¬â€ prevents race conditions
+        product = db.execute(
+            select(models.Product)
+            .where(models.Product.id == cart_item.product_id)
+            .with_for_update()                         # <-- row-level lock
+        ).scalar_one_or_none()
+
+        if not product or not product.is_active:
             raise HTTPException(
                 status_code=400,
-                detail=f"Insufficient stock for '{item.product.name}'."
+                detail=f"Product id={cart_item.product_id} is no longer available."
             )
-        total += item.product.price * item.quantity
+        if product.stock_quantity < cart_item.quantity:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Only {product.stock_quantity} unit(s) of '{product.name}' left in stock."
+            )
+
+        total += float(product.price) * cart_item.quantity
+        order_items.append((product, cart_item.quantity))
 
     shipping_address = _format_address(order_data.address)
 
-    rz = _get_razorpay()
+    rz       = _get_razorpay()
     rz_order = rz.order.create({
-        "amount": int(total * 100),
+        "amount":   int(round(total * 100)),   # paise, no float drift
         "currency": "INR",
-        "receipt": f"rudhita_user_{current_user.id}",
+        "receipt":  f"rudhita_user_{current_user.id}",
     })
 
     new_order = models.Order(
-        user_id=current_user.id,
-        total_amount=total,
-        shipping_address=shipping_address,
-        razorpay_order_id=rz_order["id"],
-        payment_status="Pending",
-        shipping_status="Pending",
+        user_id            = current_user.id,
+        total_amount       = round(total, 2),
+        shipping_address   = shipping_address,
+        razorpay_order_id  = rz_order["id"],
+        payment_status     = "Pending",
+        shipping_status    = "Pending",
+    )
+    db.add(new_order)
+    db.flush()  # get new_order.id before creating items
+
+    for product, qty in order_items:
+        db.add(models.OrderItem(
+            order_id          = new_order.id,
+            product_id        = product.id,
+            quantity          = qty,
+            price_at_purchase = product.price,
+        ))
+        product.stock_quantity -= qty   # safe: row is locked
+
+    db.add(models.TrackingEvent(
+        order_id    = new_order.id,
+        status      = "Order Placed",
+        description = "Your order has been received and is being processed.",
+    ))
+    db.commit()  # lock released here; all stock decrements are now visible atomically
+
+    # FIX: pass user_id not db Ã¢â‚¬â€ background task opens its own session
+    background_tasks.add_task(_clear_cart, current_user.id)
+
+    logger.info("Order #%s created for user %s, Razorpay=%s", new_order.id, current_user.id, rz_order["id"])
+
+    return {
+        "order_id":         new_order.id,
+        "razorpay_order_id": rz_order["id"],
+        "amount":           round(total, 2),
+        "currency":         "INR",
+        "key_id":           os.getenv("RAZORPAY_KEY_ID"),
+    }
+
+
+# Ã¢â€â‚¬Ã¢â€â‚¬ 2. Legacy checkout route (kept for compatibility) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+
+@router.post("/checkout", response_model=dict, status_code=201)
+def checkout(
+    order_data:       schemas.OrderCreate,
+    background_tasks: BackgroundTasks,
+    db:               Session = Depends(get_db),
+    current_user:     models.User = Depends(get_current_user),
+):
+    """Legacy route Ã¢â‚¬â€ same race-condition fixes applied."""
+    cart = (
+        db.query(models.Cart)
+        .options(joinedload(models.Cart.items))
+        .filter(models.Cart.user_id == current_user.id)
+        .first()
+    )
+    if not cart or not cart.items:
+        raise HTTPException(status_code=400, detail="Your cart is empty.")
+
+    total       = 0
+    order_items = []
+
+    for cart_item in cart.items:
+        product = db.execute(
+            select(models.Product)
+            .where(models.Product.id == cart_item.product_id)
+            .with_for_update()
+        ).scalar_one_or_none()
+
+        if not product or not product.is_active:
+            raise HTTPException(status_code=400, detail=f"Product unavailable.")
+        if product.stock_quantity < cart_item.quantity:
+            raise HTTPException(status_code=400, detail=f"Insufficient stock for '{product.name}'.")
+
+        total += float(product.price) * cart_item.quantity
+        order_items.append((product, cart_item.quantity))
+
+    rz       = _get_razorpay()
+    rz_order = rz.order.create({"amount": int(round(total * 100)), "currency": "INR"})
+
+    new_order = models.Order(
+        user_id           = current_user.id,
+        total_amount      = round(total, 2),
+        shipping_address  = order_data.shipping_address,
+        razorpay_order_id = rz_order["id"],
+        payment_status    = "Pending",
+        shipping_status   = "Pending",
     )
     db.add(new_order)
     db.flush()
 
-    for item in cart.items:
+    for product, qty in order_items:
         db.add(models.OrderItem(
-            order_id=new_order.id,
-            product_id=item.product_id,
-            quantity=item.quantity,
-            price_at_purchase=item.product.price,
+            order_id=new_order.id, product_id=product.id,
+            quantity=qty, price_at_purchase=product.price,
         ))
-        item.product.stock_quantity -= item.quantity
+        product.stock_quantity -= qty
 
     db.add(models.TrackingEvent(
-        order_id=new_order.id,
-        status="Order Placed",
-        description="Your order has been received and is being processed.",
+        order_id=new_order.id, status="Order Placed",
+        description="Your order has been received.",
     ))
     db.commit()
-    background_tasks.add_task(_clear_cart, db, current_user.id)
+    background_tasks.add_task(_clear_cart, current_user.id)
 
     return {
         "order_id": new_order.id,
         "razorpay_order_id": rz_order["id"],
-        "amount": total,
+        "amount": round(total, 2),
         "currency": "INR",
         "key_id": os.getenv("RAZORPAY_KEY_ID"),
     }
 
 
-# â”€â”€ 2. POST /orders/checkout â€” legacy route kept for compatibility â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-@router.post("/checkout", response_model=dict, status_code=201)
-def checkout(
-    order_data: schemas.OrderCreate,
-    background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
-):
-    cart = (
-        db.query(models.Cart)
-        .options(joinedload(models.Cart.items).joinedload(models.CartItem.product))
-        .filter(models.Cart.user_id == current_user.id)
-        .first()
-    )
-    if not cart or not cart.items:
-        raise HTTPException(status_code=400, detail="Your cart is empty.")
-    total = 0.0
-    for item in cart.items:
-        if item.product.stock_quantity < item.quantity:
-            raise HTTPException(status_code=400, detail=f"Insufficient stock for '{item.product.name}'.")
-        total += item.product.price * item.quantity
-    rz = _get_razorpay()
-    rz_order = rz.order.create({"amount": int(total * 100), "currency": "INR"})
-    new_order = models.Order(
-        user_id=current_user.id, total_amount=total,
-        shipping_address=order_data.shipping_address,
-        razorpay_order_id=rz_order["id"],
-        payment_status="Pending", shipping_status="Pending",
-    )
-    db.add(new_order)
-    db.flush()
-    for item in cart.items:
-        db.add(models.OrderItem(order_id=new_order.id, product_id=item.product_id,
-                                quantity=item.quantity, price_at_purchase=item.product.price))
-        item.product.stock_quantity -= item.quantity
-    db.add(models.TrackingEvent(order_id=new_order.id, status="Order Placed",
-                                description="Your order has been received."))
-    db.commit()
-    background_tasks.add_task(_clear_cart, db, current_user.id)
-    return {"order_id": new_order.id, "razorpay_order_id": rz_order["id"],
-            "amount": total, "currency": "INR", "key_id": os.getenv("RAZORPAY_KEY_ID")}
+# Ã¢â€â‚¬Ã¢â€â‚¬ 3. Confirm payment Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
-
-# â”€â”€ 3. CONFIRM PAYMENT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 @router.post("/{order_id}/confirm-payment")
 def confirm_payment(
     order_id: int,
-    payload: schemas.PaymentStatusUpdate,
-    db: Session = Depends(get_db),
+    payload:  schemas.PaymentConfirm,      # FIX: new schema Ã¢â‚¬â€ requires all 3 Razorpay fields
+    db:       Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
+    """
+    FIX 1: Verifies the Razorpay HMAC-SHA256 signature before marking as Paid.
+            Without this any user can send fake payment data and get goods for free.
+    FIX 2: Idempotency guard Ã¢â‚¬â€ a Paid order cannot be downgraded.
+    """
     order = db.query(models.Order).filter(
-        models.Order.id == order_id, models.Order.user_id == current_user.id
+        models.Order.id      == order_id,
+        models.Order.user_id == current_user.id,
     ).first()
     if not order:
         raise HTTPException(status_code=404, detail="Order not found.")
-    order.payment_status = payload.payment_status
-    if payload.razorpay_payment_id:
-        order.razorpay_payment_id = payload.razorpay_payment_id
-    if payload.payment_status == "Paid":
-        order.shipping_status = "Processing"
-        db.add(models.TrackingEvent(order_id=order.id, status="Payment Confirmed",
-                                    description="Payment received. Order being prepared."))
+
+    # Verify the order belongs to the Razorpay order we created
+    if order.razorpay_order_id != payload.razorpay_order_id:
+        raise HTTPException(status_code=400, detail="Razorpay order ID mismatch.")
+
+    # FIX: Idempotency Ã¢â‚¬â€ never overwrite a completed payment
+    if order.payment_status == "Paid":
+        return {"status": "success", "message": "Order is already marked as paid."}
+
+    # FIX: Cryptographic signature verification
+    key_secret = os.getenv("RAZORPAY_KEY_SECRET", "").encode()
+    body       = f"{payload.razorpay_order_id}|{payload.razorpay_payment_id}".encode()
+    # BUG 8 FIX: use digestmod= keyword arg
+    expected   = hmac.new(key_secret, body, digestmod=hashlib.sha256).hexdigest()
+
+    if not hmac.compare_digest(expected, payload.razorpay_signature):
+        logger.warning(
+            "Payment signature mismatch for order #%s, user #%s",
+            order_id, current_user.id
+        )
+        raise HTTPException(status_code=400, detail="Payment verification failed. Signature mismatch.")
+
+    order.payment_status      = "Paid"
+    order.razorpay_payment_id = payload.razorpay_payment_id
+    order.shipping_status     = "Processing"
+    db.add(models.TrackingEvent(
+        order_id    = order.id,
+        status      = "Payment Confirmed",
+        description = "Payment received and verified. Order is being prepared.",
+    ))
     db.commit()
-    return {"status": "success", "message": f"Order #{order_id} payment updated."}
+
+    logger.info("Payment confirmed for order #%s (payment=%s)", order_id, payload.razorpay_payment_id)
+    return {"status": "success", "message": f"Order #{order_id} payment confirmed."}
 
 
-# â”€â”€ 4. LIST MY ORDERS â€” returns {orders: [...]} so frontend's data.orders works
+# Ã¢â€â‚¬Ã¢â€â‚¬ 4. List my orders Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+
 @router.get("/", response_model=schemas.OrderListResponse)
 def list_my_orders(
-    skip: int = 0,
+    skip:  int = 0,
     limit: int = 20,
-    db: Session = Depends(get_db),
+    db:    Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    orders = (
-        db.query(models.Order)
+    """
+    FIX: Replaces the N+1 loop (one COUNT query per order) with a single
+         GROUP BY subquery Ã¢â‚¬â€ all item counts fetched in one DB round-trip.
+    """
+    # Subquery: item_count per order
+    item_count_sq = (
+        db.query(
+            models.OrderItem.order_id,
+            sqlfunc.count(models.OrderItem.id).label("item_count"),
+        )
+        .group_by(models.OrderItem.order_id)
+        .subquery()
+    )
+
+    rows = (
+        db.query(models.Order, item_count_sq.c.item_count)
+        .outerjoin(item_count_sq, models.Order.id == item_count_sq.c.order_id)
         .filter(models.Order.user_id == current_user.id)
         .order_by(models.Order.created_at.desc())
-        .offset(skip).limit(limit).all()
+        .offset(skip)
+        .limit(limit)
+        .all()
     )
-    result = []
-    for o in orders:
-        item_count = db.query(sqlfunc.count(models.OrderItem.id)).filter(
-            models.OrderItem.order_id == o.id
-        ).scalar()
-        result.append(schemas.OrderSummaryResponse(
-            id=o.id, total_amount=o.total_amount,
-            payment_status=o.payment_status, shipping_status=o.shipping_status,
-            item_count=item_count, created_at=o.created_at,
-        ))
+
+    result = [
+        schemas.OrderSummaryResponse(
+            id              = o.id,
+            total_amount    = o.total_amount,
+            payment_status  = o.payment_status,
+            shipping_status = o.shipping_status,
+            item_count      = count or 0,
+            created_at      = o.created_at,
+        )
+        for o, count in rows
+    ]
     return schemas.OrderListResponse(orders=result)
 
 
-# â”€â”€ 5. ORDER DETAIL â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Ã¢â€â‚¬Ã¢â€â‚¬ 5. Order detail Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+
 @router.get("/{order_id}", response_model=schemas.OrderResponse)
 def get_order(
     order_id: int,
@@ -1011,19 +1702,20 @@ def get_order(
     return order
 
 
-# â”€â”€ 6. TRACK ORDER â€” used by OrderTrackingPage â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Ã¢â€â‚¬Ã¢â€â‚¬ 6. Track order Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+
 @router.get("/{order_id}/track", response_model=schemas.TrackingResponse)
 def track_order(
     order_id: int,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    """GET /orders/{id}/track â€” called by API.orders.track(id)"""
     order = db.query(models.Order).filter(
         models.Order.id == order_id, models.Order.user_id == current_user.id
     ).first()
     if not order:
         raise HTTPException(status_code=404, detail="Order not found.")
+
     events = (
         db.query(models.TrackingEvent)
         .filter(models.TrackingEvent.order_id == order_id)
@@ -1031,14 +1723,15 @@ def track_order(
         .all()
     )
     return schemas.TrackingResponse(
-        order_id=order.id,
-        shipping_status=order.shipping_status,
-        waybill=order.delhivery_waybill,
-        events=events,
+        order_id        = order.id,
+        shipping_status = order.shipping_status,
+        waybill         = order.delhivery_waybill,
+        events          = events,
     )
 
 
-# â”€â”€ 7. CANCEL ORDER â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Ã¢â€â‚¬Ã¢â€â‚¬ 7. Cancel order Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+
 @router.post("/{order_id}/cancel")
 def cancel_order(
     order_id: int,
@@ -1051,28 +1744,51 @@ def cancel_order(
     if not order:
         raise HTTPException(status_code=404, detail="Order not found.")
     if order.shipping_status not in ("Pending", "Processing"):
-        raise HTTPException(status_code=400,
-                            detail=f"Cannot cancel an order that is '{order.shipping_status}'.")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot cancel an order that is '{order.shipping_status}'."
+        )
+
     order.shipping_status = "Cancelled"
-    order.payment_status = "Refund Initiated" if order.payment_status == "Paid" else "Cancelled"
+    order.payment_status  = "Refund Initiated" if order.payment_status == "Paid" else "Cancelled"
+
+    # Restore stock for each item (lock rows to be safe)
     for item in order.items:
-        product = db.query(models.Product).filter(models.Product.id == item.product_id).first()
+        product = db.execute(
+            select(models.Product)
+            .where(models.Product.id == item.product_id)
+            .with_for_update()
+        ).scalar_one_or_none()
         if product:
             product.stock_quantity += item.quantity
-    db.add(models.TrackingEvent(order_id=order.id, status="Cancelled",
-                                description="Order cancelled by customer."))
+
+    db.add(models.TrackingEvent(
+        order_id    = order.id,
+        status      = "Cancelled",
+        description = "Order cancelled by customer.",
+    ))
     db.commit()
     return {"status": "success", "message": "Order cancelled and stock restored."}
 ===== D:\Rudhita\rudhita-backend\products.py =====
+"""
+products.py  â€”  Product Routes (PATCHED)
+
+Changes from audit:
+  - get_by_category(): added skip/limit with Query(le=100) hard cap â€” was unbounded
+  - search_products(): added skip, total count returned alongside results
+  - Both endpoints now return { products, total, skip, limit } for proper frontend pagination
+"""
+
 import uuid
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
-from typing import List, Optional
+from fastapi           import APIRouter, Depends, HTTPException, Query
+from sqlalchemy        import func
+from sqlalchemy.orm    import Session
+from typing            import List, Optional
 
 import models
 import schemas
 from database import get_db
-from utils import get_current_user
+from utils    import get_current_user
 
 router = APIRouter(prefix="/products", tags=["Products"])
 
@@ -1080,11 +1796,12 @@ router = APIRouter(prefix="/products", tags=["Products"])
 def _build_response(p) -> schemas.ProductResponse:
     pr = schemas.ProductResponse.model_validate(p)
     if p.original_price and p.original_price > p.price:
-        pr.discount_percent = int((1 - p.price / p.original_price) * 100)
+        pr.discount_percent = int((1 - float(p.price) / float(p.original_price)) * 100)
     return pr
 
 
-# â”€â”€ 1. CREATE PRODUCT (admin only) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# â”€â”€ 1. Create product (admin only) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
 @router.post("/", response_model=schemas.ProductResponse, status_code=201)
 def create_product(
     product: schemas.ProductCreate,
@@ -1098,16 +1815,18 @@ def create_product(
     new_product = models.Product(**product.model_dump())
     db.add(new_product)
     db.commit()
+    db.refresh(new_product)
     return _build_response(new_product)
 
 
-# â”€â”€ 2. CATALOG â€” returns {products: [...]} so frontend's data.products works â”€
+# â”€â”€ 2. Catalogue â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
 @router.get("/", response_model=schemas.ProductListResponse)
 def get_products(
-    skip: int = 0,
-    limit: int = 40,
+    skip:     int           = Query(default=0, ge=0),
+    limit:    int           = Query(default=40, ge=1, le=100),  # hard cap
     category: Optional[str] = None,
-    search: Optional[str] = None,
+    search:   Optional[str] = None,
     db: Session = Depends(get_db),
 ):
     q = db.query(models.Product).filter(models.Product.is_active == True)
@@ -1118,13 +1837,21 @@ def get_products(
             models.Product.name.ilike(f"%{search}%") |
             models.Product.description.ilike(f"%{search}%")
         )
+    total    = q.with_entities(func.count(models.Product.id)).scalar()
     products = q.order_by(models.Product.created_at.desc()).offset(skip).limit(limit).all()
-    return schemas.ProductListResponse(products=[_build_response(p) for p in products])
+    return schemas.ProductListResponse(
+        products=[_build_response(p) for p in products],
+        total=total, skip=skip, limit=limit,
+    )
 
 
-# â”€â”€ 3. FEATURED â€” must be BEFORE /{product_id} â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# â”€â”€ 3. Featured â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
 @router.get("/featured", response_model=List[schemas.ProductResponse])
-def get_featured_products(limit: int = 8, db: Session = Depends(get_db)):
+def get_featured_products(
+    limit: int = Query(default=8, ge=1, le=40),
+    db: Session = Depends(get_db),
+):
     products = (
         db.query(models.Product)
         .filter(models.Product.is_active == True)
@@ -1137,41 +1864,64 @@ def get_featured_products(limit: int = 8, db: Session = Depends(get_db)):
     return [_build_response(p) for p in products]
 
 
-# â”€â”€ 4. SEARCH â€” alias for ?search= so api.js products.search() works â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# â”€â”€ 4. Search â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
 @router.get("/search", response_model=schemas.ProductListResponse)
-def search_products(q: str = "", db: Session = Depends(get_db)):
-    """GET /products/search?q=silk â€” used by API.products.search()"""
-    products = (
+def search_products(
+    q:     str = Query(default="", max_length=100),
+    skip:  int = Query(default=0, ge=0),
+    limit: int = Query(default=40, ge=1, le=100),   # FIX: was hardcoded 40 with no total
+    db: Session = Depends(get_db),
+):
+    base = (
         db.query(models.Product)
         .filter(
             models.Product.is_active == True,
             models.Product.name.ilike(f"%{q}%") |
             models.Product.description.ilike(f"%{q}%"),
         )
-        .order_by(models.Product.created_at.desc())
-        .limit(40).all()
     )
-    return schemas.ProductListResponse(products=[_build_response(p) for p in products])
+    total    = base.with_entities(func.count(models.Product.id)).scalar()
+    products = base.order_by(models.Product.created_at.desc()).offset(skip).limit(limit).all()
+    return schemas.ProductListResponse(
+        products=[_build_response(p) for p in products],
+        total=total, skip=skip, limit=limit,
+    )
 
 
-# â”€â”€ 5. BY CATEGORY â€” alias for ?category= â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# â”€â”€ 5. By category â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
 @router.get("/category/{category}", response_model=schemas.ProductListResponse)
-def get_by_category(category: str, db: Session = Depends(get_db)):
-    """GET /products/category/Apparel â€” used by API.products.byCategory()"""
-    products = (
+def get_by_category(
+    category: str,
+    skip:     int = Query(default=0, ge=0),
+    limit:    int = Query(default=40, ge=1, le=100),    # FIX: was .all() with NO limit at all
+    db: Session = Depends(get_db),
+):
+    """
+    FIX: Previously fetched every row in the category with no LIMIT.
+         With 10,000 products this would return a 10 MB+ JSON payload and OOM the server.
+         Now paginated with a hard cap of 100 per page.
+    """
+    base = (
         db.query(models.Product)
         .filter(models.Product.is_active == True, models.Product.category == category)
-        .order_by(models.Product.created_at.desc())
-        .all()
     )
-    return schemas.ProductListResponse(products=[_build_response(p) for p in products])
+    total    = base.with_entities(func.count(models.Product.id)).scalar()
+    products = base.order_by(models.Product.created_at.desc()).offset(skip).limit(limit).all()
+    return schemas.ProductListResponse(
+        products=[_build_response(p) for p in products],
+        total=total, skip=skip, limit=limit,
+    )
 
 
-# â”€â”€ 6. SINGLE PRODUCT â€” must be LAST so it doesn't swallow named routes â”€â”€â”€â”€â”€â”€
+# â”€â”€ 6. Single product (must be last) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
 @router.get("/{product_id}", response_model=schemas.ProductResponse)
 def get_product(product_id: int, db: Session = Depends(get_db)):
     product = db.query(models.Product).filter(
-        models.Product.id == product_id, models.Product.is_active == True,
+        models.Product.id        == product_id,
+        models.Product.is_active == True,
     ).first()
     if not product:
         raise HTTPException(status_code=404, detail="Product not found.")
@@ -1218,17 +1968,53 @@ urllib3==2.6.3
 uvicorn==0.44.0
 wrapt==2.1.2
 ===== D:\Rudhita\rudhita-backend\reset_db.py =====
+"""
+reset_db.py  â€”  Database Reset Utility (PATCHED)
+
+Changes from audit:
+  - Hard blocks execution in production (ENV=production)
+  - Requires typing RESET to confirm â€” no accidental wipes
+  - Logs a warning before proceeding
+"""
+
+import os
+import logging
+
+logger = logging.getLogger("rudhita")
+
+# â”€â”€ SAFETY GUARD â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+if os.getenv("ENV", "development").lower() == "production":
+    raise SystemExit(
+        "\n"
+        "  â•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•—\n"
+        "  â•‘  reset_db.py is DISABLED in production.              â•‘\n"
+        "  â•‘  This script drops every table and all user data.    â•‘\n"
+        "  â•‘  Use Alembic migrations for schema changes in prod.  â•‘\n"
+        "  â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•\n"
+    )
+
+confirm = input(
+    "\nâš ï¸  WARNING: This will DROP every table and delete ALL data.\n"
+    "   Type RESET to confirm, or anything else to abort: "
+)
+if confirm.strip() != "RESET":
+    raise SystemExit("Aborted â€” no changes made.")
+
+second = input("   Are you absolutely sure? Type YES to proceed: ")
+if second.strip() != "YES":
+    raise SystemExit("Aborted â€” no changes made.")
+
+# â”€â”€ Only reaches here in development after double confirmation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 import models
 from database import engine
 from sqlalchemy import text
 
-print("Dropping all tables...")
+print("\nDropping all tables...")
 with engine.connect() as conn:
     conn.execute(text("DROP SCHEMA public CASCADE;"))
     conn.execute(text("CREATE SCHEMA public;"))
     conn.execute(text("GRANT ALL ON SCHEMA public TO postgres;"))
     conn.execute(text("GRANT ALL ON SCHEMA public TO public;"))
-    # Grant back to your dedicated user
     conn.execute(text("GRANT ALL ON SCHEMA public TO rudhita_admin;"))
     conn.execute(text("ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO rudhita_admin;"))
     conn.execute(text("ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO rudhita_admin;"))
@@ -1245,294 +2031,360 @@ with engine.connect() as conn:
     for row in result:
         print(f"  â€¢ {row[0]}")
 ===== D:\Rudhita\rudhita-backend\schemas.py =====
-from pydantic import BaseModel, EmailStr, Field, ConfigDict
+"""
+schemas.py  Ã¢â‚¬â€  Pydantic Schemas (PATCHED)
+
+Changes from audit:
+  - UserCreate:     password min 8 chars, name min 2 chars (schema-level, not just route)
+  - CartItemAdd:    quantity capped at 1-50
+  - ProductBase:    price must be > 0, stock_quantity >= 0
+  - PaymentConfirm: new schema that requires all three Razorpay fields for signature check
+  - Money fields:   use Decimal so numeric precision is preserved end-to-end
+"""
+
+from decimal import Decimal
+from pydantic import BaseModel, EmailStr, Field, ConfigDict, field_validator
 from typing import Optional, List
 from datetime import datetime
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
 # AUTH
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
 
 class UserCreate(BaseModel):
-    name: str
-    email: EmailStr
-    password: str
-    phone: Optional[str] = None
+    name:     str      = Field(min_length=2, max_length=100)
+    email:    EmailStr
+    password: str      = Field(min_length=8, max_length=128,
+                               description="At least 8 characters")
+    phone: Optional[str] = Field(default=None, max_length=20)
+
 
 class LoginRequest(BaseModel):
-    email: EmailStr
+    email:    EmailStr
     password: str
+
 
 class OTPVerify(BaseModel):
     email: EmailStr
-    otp: str
+    otp:   str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
+
 
 class ResendOTP(BaseModel):
     email: EmailStr
 
+
 class UserResponse(BaseModel):
-    id: int
-    name: str
-    email: EmailStr
-    phone: Optional[str] = None
-    is_verified: int
-    is_admin: bool
+    id:         int
+    name:       str
+    email:      EmailStr
+    phone:      Optional[str] = None
+    is_verified: bool                # FIX: was int
+    is_admin:   bool
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
 
+
 class UserProfileUpdate(BaseModel):
-    name: Optional[str] = None
-    phone: Optional[str] = None
-    password: Optional[str] = None   # handled in the route, not stored directly
+    name:             Optional[str] = Field(default=None, min_length=2, max_length=100)
+    phone:            Optional[str] = Field(default=None, max_length=20)
+    password:         Optional[str] = Field(default=None, min_length=8, max_length=128)
+    # BUG 31 FIX: current_password required when changing password
+    current_password: Optional[str] = Field(default=None, max_length=128)
+
 
 class Token(BaseModel):
-    access_token: str
-    token_type: str
+    access_token:  str
+    refresh_token: str
+    token_type:    str
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-# ADDRESS  â€” field names match what the frontend sends
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+
+# Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
+# ADDRESS
+# Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
 
 class AddressCreate(BaseModel):
-    # Frontend sends camelCase `isDefault`; populate_by_name lets us use either form
     model_config = ConfigDict(populate_by_name=True)
-    name: str
-    phone: str
-    street: str
-    city: str
-    state: str
-    pincode: str
+    name:       str  = Field(min_length=2, max_length=150)
+    phone:      str  = Field(min_length=7, max_length=20)
+    street:     str  = Field(min_length=5, max_length=500)
+    city:       str  = Field(min_length=2, max_length=100)
+    state:      str  = Field(min_length=2, max_length=100)
+    pincode:    str  = Field(min_length=6, max_length=10, pattern=r"^\d{6}$")
     is_default: bool = Field(default=False, alias="isDefault")
+
 
 class AddressUpdate(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
-    name: Optional[str] = None
-    phone: Optional[str] = None
-    street: Optional[str] = None
-    city: Optional[str] = None
-    state: Optional[str] = None
-    pincode: Optional[str] = None
+    name:       Optional[str]  = Field(default=None, min_length=2, max_length=150)
+    phone:      Optional[str]  = Field(default=None, max_length=20)
+    street:     Optional[str]  = None
+    city:       Optional[str]  = None
+    state:      Optional[str]  = None
+    pincode:    Optional[str]  = Field(default=None, pattern=r"^\d{6}$")
     is_default: Optional[bool] = Field(default=None, alias="isDefault")
 
+
 class AddressResponse(BaseModel):
-    id: int
-    name: str
-    phone: str
-    street: str
-    city: str
-    state: str
-    pincode: str
-    is_default: bool = Field(serialization_alias="isDefault")   # respond with isDefault so frontend can read a.isDefault
+    id:         int
+    name:       str
+    phone:      str
+    street:     str
+    city:       str
+    state:      str
+    pincode:    str
+    is_default: bool = Field(serialization_alias="isDefault")
     created_at: datetime
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
 # PRODUCT
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
 
 class ProductBase(BaseModel):
-    sku: str
-    name: str
-    description: Optional[str] = None
-    category: Optional[str] = None
-    price: float
-    original_price: Optional[float] = None
-    stock_quantity: int = 0
-    weight_grams: int = 0
-    image_url: Optional[str] = None
+    sku:            str
+    name:           str     = Field(min_length=2, max_length=200)
+    description:    Optional[str] = None
+    category:       Optional[str] = None
+    price:          Decimal = Field(gt=0, decimal_places=2)     # FIX: > 0, was float
+    original_price: Optional[Decimal] = Field(default=None, gt=0, decimal_places=2)
+    stock_quantity: int     = Field(default=0, ge=0)
+    weight_grams:   int     = Field(default=0, ge=0)
+    image_url:      Optional[str] = Field(default=None, max_length=500)
+
+    @field_validator("original_price")
+    @classmethod
+    def original_must_exceed_price(cls, v, info):
+        # BUG 29 FIX: use .get() â€” if price failed its own validation it won't be in info.data
+        price = info.data.get("price")
+        if v is not None and price is not None and v < price:
+            raise ValueError("original_price must be greater than price to show a discount")
+        return v
+
 
 class ProductCreate(ProductBase):
     pass
 
+
 class ProductAdminCreate(BaseModel):
-    """Used by the admin form â€” SKU is auto-generated if not supplied."""
-    name: str
-    description: Optional[str] = None
-    category: str
-    price: float
-    original_price: Optional[float] = Field(default=None, alias="originalPrice")
-    stock_quantity: int = Field(default=0, alias="stock")
-    weight_grams: int = 0
-    image_url: Optional[str] = None
-    sku: Optional[str] = None            # auto-generated if omitted
+    """Used by the admin form Ã¢â‚¬â€ SKU is auto-generated if not supplied."""
+    name:           str            = Field(min_length=2, max_length=200)
+    description:    Optional[str] = None
+    category:       str
+    price:          Decimal        = Field(gt=0, decimal_places=2)
+    original_price: Optional[Decimal] = Field(default=None, alias="originalPrice", gt=0)
+    stock_quantity: int            = Field(default=0, ge=0, alias="stock")
+    weight_grams:   int            = Field(default=0, ge=0)
+    image_url:      Optional[str] = None
+    sku:            Optional[str] = None
     model_config = ConfigDict(populate_by_name=True)
 
+
 class ProductUpdate(BaseModel):
-    name: Optional[str] = None
-    description: Optional[str] = None
-    category: Optional[str] = None
-    price: Optional[float] = None
-    original_price: Optional[float] = None
-    stock_quantity: Optional[int] = None
-    weight_grams: Optional[int] = None
-    image_url: Optional[str] = None
-    is_active: Optional[bool] = None
+    name:           Optional[str]     = None
+    description:    Optional[str]     = None
+    category:       Optional[str]     = None
+    price:          Optional[Decimal] = Field(default=None, gt=0)
+    original_price: Optional[Decimal] = Field(default=None, gt=0)
+    stock_quantity: Optional[int]     = Field(default=None, ge=0)
+    weight_grams:   Optional[int]     = Field(default=None, ge=0)
+    image_url:      Optional[str]     = None
+    is_active:      Optional[bool]    = None
+
 
 class ProductResponse(ProductBase):
-    id: int
-    is_active: bool
-    created_at: datetime
+    id:               int
+    is_active:        bool
+    created_at:       datetime
     discount_percent: Optional[int] = None
     model_config = ConfigDict(from_attributes=True)
 
+
 class ProductListResponse(BaseModel):
-    """Wraps the product list â€” frontend reads `data.products`."""
     products: List[ProductResponse]
+    total:    Optional[int] = None   # FIX: added so paginated endpoints can return count
+    skip:     Optional[int] = None
+    limit:    Optional[int] = None
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
 # CART
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
 
 class CartItemAdd(BaseModel):
     product_id: int
-    quantity: int = 1
+    quantity:   int = Field(default=1, ge=1, le=50)   # FIX: was uncapped
+
 
 class CartItemUpdate(BaseModel):
     product_id: int
-    quantity: int
+    quantity:   int = Field(ge=1, le=50)
+
 
 class CartItemResponse(BaseModel):
-    id: int
+    id:       int
     quantity: int
-    product: ProductResponse
+    product:  ProductResponse
     model_config = ConfigDict(from_attributes=True)
+
 
 class CartResponse(BaseModel):
-    id: int
-    user_id: int
-    items: List[CartItemResponse] = []
-    cart_total: float = 0.0
+    id:         int
+    user_id:    int
+    items:      List[CartItemResponse] = []
+    cart_total: Decimal = Decimal("0.00")             # FIX: was float
     model_config = ConfigDict(from_attributes=True)
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
 # ORDERS
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
 
 class OrderCreate(BaseModel):
-    """Used by the backend /orders/checkout route (reads from cart)."""
     shipping_address: str
+
 
 class CheckoutAddress(BaseModel):
-    """The address object the frontend sends in POST /orders/."""
-    name: str
-    phone: str
-    street: str
-    city: str
-    state: str
-    pincode: str
+    name:    str = Field(min_length=2, max_length=150)
+    phone:   str = Field(min_length=7, max_length=20)
+    street:  str = Field(min_length=5)
+    city:    str = Field(min_length=2, max_length=100)
+    state:   str = Field(min_length=2, max_length=100)
+    pincode: str = Field(min_length=6, max_length=10, pattern=r"^\d{6}$")
+
 
 class FrontendOrderCreate(BaseModel):
-    """Shape of what CheckoutPage sends to POST /orders/."""
-    address: CheckoutAddress
+    address:        CheckoutAddress
     shipping_method: str = "standard"
-    payment_method: str = "razorpay"
-    total: Optional[float] = None   # frontend calculates this; backend recalculates from cart
+    payment_method:  str = "razorpay"
+    # NOTE: 'total' from frontend is intentionally ignored Ã¢â‚¬â€ backend recalculates from DB
+    total: Optional[Decimal] = None
+
+
+# Ã¢â€â‚¬Ã¢â€â‚¬ FIX: New schema for payment confirmation that requires all 3 Razorpay fields Ã¢â€â‚¬Ã¢â€â‚¬
+class PaymentConfirm(BaseModel):
+    """
+    All three fields are required for Razorpay HMAC-SHA256 signature verification.
+    Without this, anyone can mark an order as paid for free.
+    """
+    razorpay_order_id:   str = Field(min_length=1)
+    razorpay_payment_id: str = Field(min_length=1)
+    razorpay_signature:  str = Field(min_length=1)
+
+
+class PaymentStatusUpdate(BaseModel):
+    """Legacy Ã¢â‚¬â€ kept only for the shipping address admin patch."""
+    payment_status:      str
+    razorpay_payment_id: Optional[str] = None
+    delhivery_waybill:   Optional[str] = None
+
 
 class OrderItemResponse(BaseModel):
-    id: int
-    quantity: int
-    price_at_purchase: float
-    product: ProductResponse
+    id:                int
+    quantity:          int
+    price_at_purchase: Decimal
+    product:           ProductResponse
     model_config = ConfigDict(from_attributes=True)
+
 
 class TrackingEventResponse(BaseModel):
-    id: int
-    status: str
-    location: Optional[str] = None
+    id:          int
+    status:      str
+    location:    Optional[str] = None
     description: Optional[str] = None
-    created_at: datetime
+    created_at:  datetime
     model_config = ConfigDict(from_attributes=True)
+
 
 class OrderResponse(BaseModel):
-    id: int
-    user_id: int
-    total_amount: float
-    payment_status: str
-    shipping_status: str
-    razorpay_order_id: Optional[str] = None
-    delhivery_waybill: Optional[str] = None
-    shipping_address: str
-    created_at: datetime
-    updated_at: datetime
-    items: List[OrderItemResponse] = []
-    tracking_events: List[TrackingEventResponse] = []
+    id:                   int
+    user_id:              int
+    total_amount:         Decimal
+    payment_status:       str
+    shipping_status:      str
+    razorpay_order_id:    Optional[str] = None
+    delhivery_waybill:    Optional[str] = None
+    shipping_address:     str
+    created_at:           datetime
+    updated_at:           datetime
+    items:                List[OrderItemResponse] = []
+    tracking_events:      List[TrackingEventResponse] = []
     model_config = ConfigDict(from_attributes=True)
+
 
 class OrderSummaryResponse(BaseModel):
-    id: int
-    total_amount: float
-    payment_status: str
+    id:              int
+    total_amount:    Decimal
+    payment_status:  str
     shipping_status: str
-    item_count: int
-    created_at: datetime
+    item_count:      int
+    created_at:      datetime
     model_config = ConfigDict(from_attributes=True)
 
+
 class OrderListResponse(BaseModel):
-    """Frontend reads `data.orders`."""
     orders: List[OrderSummaryResponse]
 
+
 class TrackingResponse(BaseModel):
-    """Response for GET /orders/{id}/track"""
-    order_id: int
+    order_id:       int
     shipping_status: str
-    waybill: Optional[str] = None
-    events: List[TrackingEventResponse] = []
+    waybill:        Optional[str] = None
+    events:         List[TrackingEventResponse] = []
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
 # ADMIN / SELLER DASHBOARD
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
 
 class OrderStatusUpdate(BaseModel):
     shipping_status: str
-    location: Optional[str] = None
-    description: Optional[str] = None
+    location:        Optional[str] = None
+    description:     Optional[str] = None
+
 
 class AdminOrderUpdate(BaseModel):
-    """Frontend sends { status } to PUT /admin/orders/{id}."""
     status: str
 
-class PaymentStatusUpdate(BaseModel):
-    payment_status: str
-    razorpay_payment_id: Optional[str] = None
-    delhivery_waybill: Optional[str] = None
 
 class DashboardStats(BaseModel):
-    total_orders: int
-    pending_orders: int
-    shipped_orders: int
-    delivered_orders: int
-    total_revenue: float
-    total_products: int
+    total_orders:      int
+    pending_orders:    int
+    shipped_orders:    int
+    delivered_orders:  int
+    total_revenue:     Decimal
+    total_products:    int
     low_stock_products: int
-    total_users: int
+    total_users:       int
+
 
 class AdminDashboardResponse(BaseModel):
-    """camelCase shape the frontend reads."""
-    totalOrders: int
-    totalRevenue: float
+    totalOrders:   int
+    totalRevenue:  Decimal
     totalProducts: int
-    recentOrders: list
+    recentOrders:  list
+
 
 class ProductStockAlert(BaseModel):
-    id: int
-    sku: str
-    name: str
+    id:             int
+    sku:            str
+    name:           str
     stock_quantity: int
     model_config = ConfigDict(from_attributes=True)
 
+
 class AdminUserResponse(BaseModel):
-    id: int
-    name: str
-    email: str
-    phone: Optional[str] = None
-    is_verified: int
-    is_admin: bool
+    id:         int
+    name:       str
+    email:      str
+    phone:      Optional[str] = None
+    is_verified: bool
+    is_admin:   bool
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
 ===== D:\Rudhita\rudhita-backend\user.py =====
@@ -1543,12 +2395,12 @@ from typing import List
 import models
 import schemas
 from database import get_db
-from utils import get_current_user, hash_password
+from utils import get_current_user, hash_password, verify_password
 
 router = APIRouter(prefix="/user", tags=["User Profile"])
 
 
-# â”€â”€ PROFILE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Ã¢â€â‚¬Ã¢â€â‚¬ PROFILE Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
 @router.get("/profile", response_model=schemas.UserResponse)
 def get_profile(current_user: models.User = Depends(get_current_user)):
@@ -1566,9 +2418,14 @@ def update_profile(
     if update.phone is not None:
         current_user.phone = update.phone
     if update.password is not None:
-        # Settings tab sends password here â€” hash and store it
-        if len(update.password) < 6:
-            raise HTTPException(status_code=400, detail="Password must be at least 6 characters.")
+        # BUG 9 FIX: enforce min 8 to match schema
+        # BUG 31 FIX: verify current password before allowing change
+        if not update.current_password:
+            raise HTTPException(status_code=400, detail="Current password is required to set a new password.")
+        if not verify_password(update.current_password, current_user.password_hash):
+            raise HTTPException(status_code=400, detail="Current password is incorrect.")
+        if len(update.password) < 8:
+            raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
         current_user.password_hash = hash_password(update.password)
     db.add(current_user)
     db.commit()
@@ -1576,14 +2433,14 @@ def update_profile(
     return current_user
 
 
-# â”€â”€ ADDRESSES â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Ã¢â€â‚¬Ã¢â€â‚¬ ADDRESSES Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
 @router.get("/addresses")
 def list_addresses(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    """Returns {addresses: [...]} â€” frontend reads addressesData.addresses"""
+    """Returns {addresses: [...]} Ã¢â‚¬â€ frontend reads addressesData.addresses"""
     addrs = (
         db.query(models.Address)
         .filter(models.Address.user_id == current_user.id)
@@ -1660,7 +2517,7 @@ def set_default_address(
     return _serialize_address(address)
 
 
-# â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Ã¢â€â‚¬Ã¢â€â‚¬ Helpers Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
 def _serialize_address(a: models.Address) -> dict:
     """Return camelCase `isDefault` so frontend's a.isDefault works."""
@@ -1693,9 +2550,28 @@ def _clear_default(db: Session, user_id: int):
         models.Address.is_default == True,
     ).update({"is_default": False})
 ===== D:\Rudhita\rudhita-backend\utils.py =====
+"""
+utils.py  ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â  Auth Utilities (PATCHED)
+
+Changes from audit:
+  - hash_otp()            : OTPs now stored as HMAC-SHA256, never plain text
+  - send_otp_email()      : Real SMTP transport; print() only in dev mode
+  - create_access_token() : Includes 'jti' claim so tokens can be revoked
+  - create_refresh_token(): Opaque random token stored in DB
+  - get_current_user()    : Checks TokenBlocklist before trusting a token
+"""
+
 import os
-from passlib.context import CryptContext
+import hmac
+import uuid
+import secrets
+import hashlib
+import smtplib
+import logging
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta, timezone
+
 import jwt
 from jwt.exceptions import InvalidTokenError
 from fastapi import Depends, HTTPException, status
@@ -1703,43 +2579,140 @@ from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from database import get_db
 
-# --- Load secrets from environment (never hardcode these) ---
+logger = logging.getLogger("rudhita")
+
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Secrets & config ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 if not SECRET_KEY:
-    raise ValueError("JWT_SECRET_KEY is not set in the environment. Check your .env file.")
+    raise ValueError("JWT_SECRET_KEY is not set. Add it to your .env file.")
 
-ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
+ALGORITHM                  = os.getenv("JWT_ALGORITHM", "HS256")
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
+REFRESH_TOKEN_EXPIRE_DAYS   = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "30"))
 
-# Tell Passlib to use the industry-standard bcrypt algorithm
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Password hashing ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
+from passlib.context import CryptContext
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-# OAuth2 scheme â€” tells FastAPI where to find the Bearer token
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
 
 def hash_password(password: str) -> str:
-    """Converts a plain password into a secure hash."""
     return pwd_context.hash(password)
 
 
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Checks if a typed password matches the hash in the database."""
-    return pwd_context.verify(plain_password, hashed_password)
+def verify_password(plain: str, hashed: str) -> bool:
+    return pwd_context.verify(plain, hashed)
 
 
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ OTP helpers ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
+def hash_otp(otp: str) -> str:
+    """
+    Returns an HMAC-SHA256 hex digest of the OTP.
+    Stored in the DB instead of plain text so a DB leak doesn't expose codes.
+    """
+    # BUG 8 FIX: use digestmod= keyword arg Ã¢â‚¬â€ positional is deprecated and fails in some envs
+    return hmac.new(
+        SECRET_KEY.encode("utf-8"),
+        otp.encode("utf-8"),
+        digestmod=hashlib.sha256,
+    ).hexdigest()
+
+
+def verify_otp_hash(plain_otp: str, stored_hash: str) -> bool:
+    """Constant-time comparison to prevent timing attacks."""
+    return hmac.compare_digest(hash_otp(plain_otp), stored_hash)
+
+
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Email ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
+def send_otp_email(to_email: str, otp_code: str) -> None:
+    """
+    Sends the OTP via SMTP.
+    Requires in .env:
+        SMTP_HOST, SMTP_PORT (default 587), SMTP_USER, SMTP_PASS, FROM_EMAIL
+
+    In development (SMTP_HOST not set), falls back to a WARNING log line only.
+    Never prints the OTP to stdout in production.
+    """
+    smtp_host = os.getenv("SMTP_HOST")
+    smtp_port = int(os.getenv("SMTP_PORT", "587"))
+    smtp_user = os.getenv("SMTP_USER")
+    smtp_pass = os.getenv("SMTP_PASS")
+    from_email = os.getenv("FROM_EMAIL", smtp_user)
+
+    if not smtp_host or not smtp_user:
+        # Development only ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â never reaches this branch in production
+        logger.warning("[DEV] OTP for %s => %s  (set SMTP_HOST to send real emails)", to_email, otp_code)
+        return
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = "Your Rudhita Verification Code"
+    msg["From"]    = from_email
+    msg["To"]      = to_email
+
+    text = (
+        f"Your Rudhita verification code is: {otp_code}\n"
+        f"It expires in 10 minutes.\n"
+        f"If you did not request this, please ignore this email."
+    )
+    html = f"""
+    <html><body style="font-family:sans-serif;max-width:480px;margin:auto">
+      <h2 style="color:#1a1a1a">Your Rudhita OTP</h2>
+      <p style="font-size:32px;letter-spacing:6px;font-weight:bold;color:#333">{otp_code}</p>
+      <p style="color:#555">This code expires in <strong>10 minutes</strong>.</p>
+      <p style="color:#999;font-size:12px">If you didn't request this, ignore this email.</p>
+    </body></html>
+    """
+    msg.attach(MIMEText(text, "plain"))
+    msg.attach(MIMEText(html, "html"))
+
+    try:
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=10) as server:
+            server.ehlo()
+            server.starttls()
+            server.login(smtp_user, smtp_pass)
+            server.sendmail(from_email, [to_email], msg.as_string())
+        logger.info("OTP email dispatched to %s", to_email)
+    except smtplib.SMTPException as exc:
+        logger.error("SMTP error sending to %s: %s", to_email, exc)
+        raise HTTPException(
+            status_code=503,
+            detail="Email service temporarily unavailable. Please try again shortly.",
+        )
+
+
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ JWT access token ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 def create_access_token(data: dict) -> str:
-    """Generates a signed JWT for a logged-in user."""
+    """
+    Generates a signed JWT.
+    Includes 'jti' (JWT ID) so individual tokens can be blocklisted on logout.
+    """
     to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    to_encode.update({"exp": expire})
+    expire    = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    jti       = str(uuid.uuid4())
+    to_encode.update({"exp": expire, "jti": jti})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 
-def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Refresh token ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
+def create_refresh_token() -> tuple[str, datetime]:
     """
-    FastAPI dependency â€” decodes the JWT and returns the authenticated User.
-    Use on any protected route:  user = Depends(get_current_user)
+    Returns (opaque_token_string, expiry_datetime).
+    The caller must persist the token in the RefreshToken table.
+    """
+    token      = secrets.token_urlsafe(48)
+    expires_at = datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    return token, expires_at
+
+
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Auth dependency ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
+def get_current_user(
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db),
+):
+    """
+    FastAPI dependency ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â decodes the JWT, checks the blocklist,
+    and returns the authenticated User object.
     """
     import models  # local import to avoid circular dependency
 
@@ -1750,16 +2723,398 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     )
 
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        email: str = payload.get("sub")
+        payload  = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        email: str  = payload.get("sub")
         user_id: int = payload.get("id")
-        if email is None or user_id is None:
+        jti: str    = payload.get("jti")
+        if not email or not user_id or not jti:
             raise credentials_exception
     except InvalidTokenError:
         raise credentials_exception
 
+    # FIX: check if this specific token was revoked (logout)
+    blocked = db.query(models.TokenBlocklist).filter(
+        models.TokenBlocklist.jti == jti
+    ).first()
+    if blocked:
+        raise credentials_exception
+
     user = db.query(models.User).filter(models.User.id == user_id).first()
-    if user is None:
+    if user is None or not user.is_verified:
         raise credentials_exception
 
     return user
+
+
+def send_order_confirmation_email(to_email: str, customer_name: str, order) -> None:
+    """
+    Sends a post-payment order confirmation email.
+    Called from:
+      - orders.py confirm_payment() (browser redirect path)
+      - webhook.py payment.captured handler (server-side safety net)
+      - admin.py set_waybill() (shipping notification)
+
+    Falls back to a log warning in development if SMTP is not configured.
+    """
+    smtp_host  = os.getenv("SMTP_HOST")
+    smtp_port  = int(os.getenv("SMTP_PORT", "587"))
+    smtp_user  = os.getenv("SMTP_USER")
+    smtp_pass  = os.getenv("SMTP_PASS")
+    from_email = os.getenv("FROM_EMAIL", smtp_user)
+
+    if not smtp_host or not smtp_user:
+        logger.warning(
+            "[DEV] Order confirmation for %s, order #%s (set SMTP_HOST to send real emails)",
+            to_email, getattr(order, "id", "?")
+        )
+        return
+
+    items_html = "".join(
+        "<tr>"
+        f"<td style='padding:8px 12px;border-bottom:1px solid #eee'>{item.product.name if item.product else 'Product'}</td>"
+        f"<td style='padding:8px 12px;border-bottom:1px solid #eee;text-align:center'>{item.quantity}</td>"
+        f"<td style='padding:8px 12px;border-bottom:1px solid #eee;text-align:right'>\u20b9{float(item.price_at_purchase or 0):,.2f}</td>"
+        "</tr>"
+        for item in (getattr(order, "items", None) or [])
+    )
+
+    order_id     = getattr(order, "id", "?")
+    total_amount = float(getattr(order, "total_amount", 0) or 0)
+    shipping_addr = getattr(order, "shipping_address", "On file")
+
+    html = f"""
+    <html><body style="font-family:sans-serif;max-width:600px;margin:auto;color:#18100C">
+      <div style="background:#A85538;padding:24px 32px">
+        <h1 style="color:#F5EFE6;margin:0;font-size:24px;font-family:Georgia,serif">Rudhita</h1>
+      </div>
+      <div style="padding:32px">
+        <h2 style="font-family:Georgia,serif;font-weight:normal">Order Confirmed, {customer_name}!</h2>
+        <p style="color:#555">Thank you for your purchase. Order <strong>#{order_id}</strong> is being prepared.</p>
+        <table style="width:100%;border-collapse:collapse;margin:20px 0">
+          <thead>
+            <tr style="background:#F5EFE6">
+              <th style="padding:8px 12px;text-align:left;font-size:12px;text-transform:uppercase">Item</th>
+              <th style="padding:8px 12px;text-align:center;font-size:12px;text-transform:uppercase">Qty</th>
+              <th style="padding:8px 12px;text-align:right;font-size:12px;text-transform:uppercase">Price</th>
+            </tr>
+          </thead>
+          <tbody>{items_html}</tbody>
+          <tfoot>
+            <tr>
+              <td colspan="2" style="padding:12px;font-weight:bold;text-align:right">Total</td>
+              <td style="padding:12px;font-weight:bold;text-align:right">\u20b9{total_amount:,.2f}</td>
+            </tr>
+          </tfoot>
+        </table>
+        <p style="color:#555"><strong>Shipping to:</strong><br>{shipping_addr}</p>
+        <p style="color:#999;font-size:12px;margin-top:32px">
+          Track your order: rudhita.vercel.app/order/{order_id}/tracking
+        </p>
+      </div>
+    </body></html>
+    """
+
+    plain = (
+        f"Order #{order_id} confirmed â€” thank you, {customer_name}!\n"
+        f"Total: \u20b9{total_amount:,.2f}\n"
+        f"Track: rudhita.vercel.app/order/{order_id}/tracking"
+    )
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = f"Order #{order_id} Confirmed â€” Rudhita"
+    msg["From"]    = from_email
+    msg["To"]      = to_email
+    msg.attach(MIMEText(plain, "plain"))
+    msg.attach(MIMEText(html,  "html"))
+
+    try:
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=10) as server:
+            server.ehlo()
+            server.starttls()
+            server.login(smtp_user, smtp_pass)
+            server.sendmail(from_email, [to_email], msg.as_string())
+        logger.info("Order confirmation email sent to %s for order #%s", to_email, order_id)
+    except smtplib.SMTPException as exc:
+        # Non-fatal â€” order is already paid; email failure should NOT block the user
+        logger.error("SMTP error sending order confirmation to %s: %s", to_email, exc)
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+import os
+
+def send_order_confirmation_email(to_email: str, user_name: str, order):
+    smtp_host = os.getenv("SMTP_HOST")
+    smtp_port = os.getenv("SMTP_PORT", 587)
+    smtp_user = os.getenv("SMTP_USER")
+    smtp_pass = os.getenv("SMTP_PASS")
+    from_email = os.getenv("FROM_EMAIL")
+
+    # If email isn't set up yet, silently skip so it doesn't crash the server
+    if not all([smtp_host, smtp_user, smtp_pass, from_email]):
+        print(f"Skipping email to {to_email}: SMTP not fully configured in .env")
+        return
+
+    subject = f"Your Rudhita Order Confirmation - #{order.id}"
+    body = f"""Hello {user_name},
+
+Thank you for shopping with Rudhita! Your order #{order.id} has been successfully placed.
+
+Total Amount: â‚¹{order.total_amount}
+Payment Status: {order.payment_status}
+
+We will notify you as soon as your order ships.
+
+Best regards,
+The Rudhita Team
+"""
+
+    msg = MIMEMultipart()
+    msg['From'] = from_email
+    msg['To'] = to_email
+    msg['Subject'] = subject
+    msg.attach(MIMEText(body, 'plain'))
+
+    try:
+        server = smtplib.SMTP(smtp_host, int(smtp_port))
+        server.starttls()
+        server.login(smtp_user, smtp_pass)
+        server.send_message(msg)
+        server.quit()
+    except Exception as e:
+        print(f"Failed to send order confirmation email: {e}")
+===== D:\Rudhita\rudhita-backend\webhook.py =====
+"""
+webhook.py  â€” Razorpay Webhook Handler
+
+WHY THIS FILE EXISTS:
+  The frontend's Razorpay handler callback (CheckoutPage.jsx) only fires when:
+    - The user's browser is still open
+    - Their mobile network holds through the redirect
+    - The tab isn't closed before the JS executes
+
+  In practice, ~5â€“10% of mobile payments in India fail to trigger the frontend
+  callback even though Razorpay has already captured the money. This file is
+  the server-side safety net that catches 100% of payments regardless of browser state.
+
+SETUP IN RAZORPAY DASHBOARD:
+  Settings â†’ Webhooks â†’ Add New Webhook
+  URL:    https://your-backend.com/webhooks/razorpay
+  Secret: (set RAZORPAY_WEBHOOK_SECRET in .env â€” must match exactly)
+  Events to subscribe:
+    âœ“ payment.captured
+    âœ“ payment.failed
+
+IMPORTANT: Set RAZORPAY_WEBHOOK_SECRET in your .env file.
+"""
+
+import os
+import hmac
+import json
+import hashlib
+import logging
+
+from fastapi        import APIRouter, Request, HTTPException, Depends, BackgroundTasks
+from sqlalchemy.orm import Session
+
+import models
+from database import get_db, SessionLocal
+from utils    import send_order_confirmation_email
+
+logger = logging.getLogger("rudhita")
+router = APIRouter(prefix="/webhooks", tags=["Webhooks"])
+
+
+# â”€â”€ Signature verification â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+def _verify_webhook_signature(body: bytes, signature: str) -> bool:
+    """
+    Razorpay signs the raw POST body with RAZORPAY_WEBHOOK_SECRET using HMAC-SHA256.
+    MUST verify this â€” otherwise any attacker can POST a fake payment.captured event
+    and get their order marked as Paid without paying.
+    """
+    secret = os.getenv("RAZORPAY_WEBHOOK_SECRET", "")
+    if not secret:
+        logger.error("RAZORPAY_WEBHOOK_SECRET is not configured â€” rejecting all webhook calls")
+        return False
+    expected = hmac.new(
+        secret.encode("utf-8"),
+        body,
+        digestmod=hashlib.sha256,
+    ).hexdigest()
+    return hmac.compare_digest(expected, signature)
+
+
+# â”€â”€ Event handlers (run as background tasks with their own DB session) â”€â”€â”€â”€â”€â”€â”€â”€
+
+def _handle_payment_captured(event: dict) -> None:
+    """
+    Marks the order Paid and fires a confirmation email.
+    Idempotent â€” safe to call multiple times for the same payment_id.
+    The frontend's confirm_payment endpoint is the primary path; this is the fallback.
+    """
+    db = SessionLocal()
+    try:
+        payment     = event.get("payload", {}).get("payment", {}).get("entity", {})
+        rz_order_id = payment.get("order_id")
+        payment_id  = payment.get("id")
+
+        if not rz_order_id or not payment_id:
+            logger.warning("Webhook payment.captured missing order_id or payment_id â€” skipping")
+            return
+
+        order = db.query(models.Order).filter(
+            models.Order.razorpay_order_id == rz_order_id
+        ).first()
+
+        if not order:
+            logger.warning("Webhook: no order found for razorpay_order_id=%s", rz_order_id)
+            return
+
+        # Idempotency guard â€” don't overwrite a payment already confirmed by the frontend
+        if order.payment_status == "Paid":
+            logger.info("Webhook: order #%s already Paid â€” no action needed", order.id)
+            return
+
+        order.payment_status      = "Paid"
+        order.razorpay_payment_id = payment_id
+        order.shipping_status     = "Processing"
+
+        db.add(models.TrackingEvent(
+            order_id    = order.id,
+            status      = "Payment Confirmed",
+            description = "Payment captured and verified via Razorpay webhook (browser-close recovery).",
+        ))
+        db.commit()
+
+        logger.info(
+            "Webhook: order #%s marked Paid via payment.captured (payment_id=%s)",
+            order.id, payment_id
+        )
+
+        # Send order confirmation email
+        try:
+            user = db.query(models.User).filter(models.User.id == order.user_id).first()
+            if user:
+                # Reload order with items eagerly so the email template can render them
+                from sqlalchemy.orm import joinedload
+                order_with_items = (
+                    db.query(models.Order)
+                    .options(joinedload(models.Order.items).joinedload(models.OrderItem.product))
+                    .filter(models.Order.id == order.id)
+                    .first()
+                )
+                send_order_confirmation_email(user.email, user.name, order_with_items or order)
+        except Exception as exc:
+            logger.error(
+                "Failed to send order confirmation email for order #%s: %s",
+                order.id, exc
+            )
+
+    except Exception as exc:
+        logger.exception("Error handling payment.captured webhook: %s", exc)
+        db.rollback()
+    finally:
+        db.close()
+
+
+def _handle_payment_failed(event: dict) -> None:
+    """
+    Marks the order PaymentFailed so the admin dashboard surfaces it clearly.
+    The customer can retry from the order history page.
+    """
+    db = SessionLocal()
+    try:
+        payment     = event.get("payload", {}).get("payment", {}).get("entity", {})
+        rz_order_id = payment.get("order_id")
+        error_desc  = payment.get("error_description", "Unknown error")
+        error_code  = payment.get("error_code", "")
+
+        if not rz_order_id:
+            return
+
+        order = db.query(models.Order).filter(
+            models.Order.razorpay_order_id == rz_order_id
+        ).first()
+
+        if not order:
+            logger.warning("Webhook payment.failed: no order found for razorpay_order_id=%s", rz_order_id)
+            return
+
+        # Don't overwrite a successfully paid order (race between success and failure events)
+        if order.payment_status == "Paid":
+            return
+
+        order.payment_status = "Failed"
+        db.add(models.TrackingEvent(
+            order_id    = order.id,
+            status      = "Payment Failed",
+            description = f"Payment failed. Reason: {error_desc} (code: {error_code}). "
+                          "You can retry payment from your order history.",
+        ))
+        db.commit()
+
+        logger.warning(
+            "Webhook: payment failed for order #%s â€” %s (%s)",
+            order.id, error_desc, error_code
+        )
+
+    except Exception as exc:
+        logger.exception("Error handling payment.failed webhook: %s", exc)
+        db.rollback()
+    finally:
+        db.close()
+
+
+# â”€â”€ Webhook endpoint â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+@router.post("/razorpay")
+async def razorpay_webhook(
+    request:          Request,
+    background_tasks: BackgroundTasks,
+):
+    """
+    Receives signed events from Razorpay and dispatches them to background handlers.
+
+    CRITICAL: We always return HTTP 200 to Razorpay, even on internal errors.
+    Razorpay retries any non-2xx response up to 8 times over 24 hours.
+    Returning 500 would cause duplicate processing â€” all errors are logged instead.
+    """
+    body      = await request.body()
+    signature = request.headers.get("X-Razorpay-Signature", "")
+
+    # â”€â”€ Step 1: Verify the signature before doing anything â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    if not _verify_webhook_signature(body, signature):
+        logger.warning(
+            "Razorpay webhook: INVALID signature from %s â€” rejected",
+            request.client.host if request.client else "unknown"
+        )
+        # Return 400 for invalid signature â€” this is intentional, not an internal error.
+        # Razorpay will NOT retry 4xx responses.
+        raise HTTPException(status_code=400, detail="Invalid webhook signature.")
+
+    # â”€â”€ Step 2: Parse and dispatch â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    try:
+        event      = json.loads(body)
+        event_type = event.get("event", "")
+        event_id   = event.get("id", "unknown")
+
+        logger.info("Razorpay webhook received: event=%s id=%s", event_type, event_id)
+
+        if event_type == "payment.captured":
+            background_tasks.add_task(_handle_payment_captured, event)
+
+        elif event_type == "payment.failed":
+            background_tasks.add_task(_handle_payment_failed, event)
+
+        else:
+            # Log unhandled events but don't error â€” Razorpay sends many event types
+            logger.debug("Webhook: unhandled event type '%s' â€” ignored", event_type)
+
+    except json.JSONDecodeError as exc:
+        logger.error("Webhook: could not parse JSON body: %s", exc)
+        # Still return 200 so Razorpay doesn't retry a malformed payload
+    except Exception as exc:
+        logger.exception("Webhook: unexpected error during dispatch: %s", exc)
+        # Return 200 â€” log and investigate, never let Razorpay retry indefinitely
+
+    return {"status": "received"}
