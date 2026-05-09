@@ -28,13 +28,14 @@ export default function GoogleLoginButton({ onSuccess, onError }) {
   const [loading, setLoading] = useState(false);
 
   const handleCredentialResponse = async (credentialResponse) => {
+    console.log('Google Auth Success Response:', credentialResponse);
     setLoading(true);
     try {
-      // credentialResponse.credential IS the Google id_token JWT
       const tokens = await API.auth.googleLogin(credentialResponse.credential);
       setAuthTokens(tokens);
       onSuccess?.(tokens);
     } catch (err) {
+      console.error('Google Auth Error:', err);
       onError?.(err.message || 'Google sign-in failed.');
     } finally {
       setLoading(false);
@@ -42,7 +43,7 @@ export default function GoogleLoginButton({ onSuccess, onError }) {
   };
 
   return (
-    <div style={{ position:'relative' }}>
+    <div style={{ position:'relative', zIndex:50, pointerEvents:'auto' }}>
       {loading && (
         <div style={{
           position:'absolute', inset:0, display:'flex',
