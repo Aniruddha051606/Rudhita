@@ -12,7 +12,7 @@ import './index.css';
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
     <AppErrorBoundary>
-      <GoogleOAuthProvider clientId={import.meta.env.VITE_GOOGLE_CLIENT_ID ?? ''}>
+      <GoogleOAuthProvider clientId="454258164465-k4crklt7dghdbjtncrmrhbagfbk7b52c.apps.googleusercontent.com">
         <BrowserRouter>
           <CartProvider>
             {/* App contains all routes; CartSidebar is a global slide-out */}
