@@ -1,186 +1,311 @@
 // src/components/CartSidebar.jsx
-import React, { useState, useEffect } from 'react';
-import { API } from '../utils/api';
+// ══════════════════════════════════════════════════════════════
+// Slide-out cart drawer — matches Rudhita's warm editorial aesthetic.
+// Driven entirely by CartContext; no local fetch calls.
+//
+// Usage:  <CartSidebar />  (place once in App.jsx or Layout.jsx)
+// ══════════════════════════════════════════════════════════════
+import React, { useEffect } from 'react';
+import { useNavigate }      from 'react-router-dom';
+import { useCart }          from '../context/CartContext';
 
-export default function CartSidebar({ isOpen, onClose, onCartUpdate }) {
-  const [cart, setCart]       = useState(null);
-  const [loading, setLoading] = useState(true);
-  const token = localStorage.getItem('rudhita_token');
+// ── Design tokens (mirrors the site palette) ──────────────────
+const T = {
+  cream:'#F5EFE6', creamD:'#EDE4D7',
+  dark:'#18100C',  darkMid:'#2C1F17',
+  terra:'#A85538', terraL:'#C4704F',
+  sage:'#6B7A5E',
+  border:'rgba(24,16,12,0.1)',
+  muted:'rgba(24,16,12,0.45)',
+};
 
-  // ── Load cart whenever the panel opens (and the user is logged in) ────────
-  useEffect(() => {
-    if (isOpen && token) {
-      loadCart();
-    } else if (!token) {
-      setLoading(false);
-    }
-  }, [isOpen, token]);
+// ── Helpers ───────────────────────────────────────────────────
+const fmtINR = (n) =>
+  `\u20B9${Number(n).toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
 
-  const loadCart = async () => {
-    setLoading(true);
-    try {
-      const data = await API.cart.get();
-      setCart(data);
-      if (onCartUpdate) onCartUpdate(data.items?.length || 0);
-    } catch (err) {
-      console.error('CartSidebar: failed to load cart:', err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // ── Remove item ──────────────────────────────────────────────────────────
-  // FIX: pass the CartItem ID (item.id), NOT the product ID.
-  // The backend DELETE /cart/remove/{item_id} expects the CartItem row id.
-  const handleRemove = async (cartItemId) => {
-    try {
-      await API.cart.remove(cartItemId);
-      loadCart(); // re-fetch to get updated total
-    } catch (err) {
-      alert('Failed to remove item.');
-    }
-  };
-
-  // ── Subtotal (calculated client-side as a fallback display) ──────────────
-  // FIX: use item.product?.price — the backend nests product data under .product
-  const subtotal = (cart?.items || []).reduce(
-    (sum, item) => sum + (parseFloat(item.product?.price || 0) * item.quantity),
-    0
+function QtyControl({ value, onChange, min = 1, max = 99 }) {
+  const btn = (label, delta, disabled) => (
+    <button
+      onClick={() => !disabled && onChange(value + delta)}
+      disabled={disabled}
+      style={{
+        width:28, height:28, border:`1px solid ${T.border}`,
+        background: disabled ? T.creamD : '#fff', borderRadius:4,
+        fontSize:16, cursor: disabled ? 'not-allowed' : 'pointer',
+        display:'flex', alignItems:'center', justifyContent:'center',
+        color: disabled ? T.muted : T.dark, transition:'all 0.15s',
+      }}
+    >{label}</button>
   );
+  return (
+    <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+      {btn('−', -1, value <= min)}
+      <span style={{ minWidth:20, textAlign:'center', fontSize:13, fontWeight:600 }}>{value}</span>
+      {btn('+', +1, value >= max)}
+    </div>
+  );
+}
 
-  // ── Render ───────────────────────────────────────────────────────────────
+// ── Main component ────────────────────────────────────────────
+export default function CartSidebar() {
+  const navigate = useNavigate();
+  const {
+    items, count, total, loading,
+    drawerOpen, closeDrawer,
+    removeItem, updateQty, clearCart,
+  } = useCart();
+
+  // Lock body scroll when drawer is open
+  useEffect(() => {
+    document.body.style.overflow = drawerOpen ? 'hidden' : '';
+    return () => { document.body.style.overflow = ''; };
+  }, [drawerOpen]);
+
+  // Close on Escape key
+  useEffect(() => {
+    const handler = (e) => { if (e.key === 'Escape') closeDrawer(); };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [closeDrawer]);
+
+  const handleCheckout = () => {
+    closeDrawer();
+    navigate('/checkout');
+  };
+
   return (
     <>
-      {/* Dark backdrop */}
+      {/* ── Backdrop ──────────────────────────────────────── */}
       <div
-        className={`cart-veil ${isOpen ? 'open' : ''}`}
-        onClick={onClose}
+        onClick={closeDrawer}
+        style={{
+          position:'fixed', inset:0, background:'rgba(18,10,6,0.55)',
+          backdropFilter:'blur(3px)', zIndex:900,
+          opacity: drawerOpen ? 1 : 0,
+          pointerEvents: drawerOpen ? 'auto' : 'none',
+          transition:'opacity 0.3s ease',
+        }}
       />
 
-      {/* Sliding panel */}
-      <div className={`cart-panel ${isOpen ? 'open' : ''}`}>
+      {/* ── Drawer panel ──────────────────────────────────── */}
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Shopping cart"
+        style={{
+          position:'fixed', top:0, right:0, bottom:0,
+          width: 'min(420px, 100vw)',
+          background:T.cream, zIndex:901,
+          display:'flex', flexDirection:'column',
+          transform: drawerOpen ? 'translateX(0)' : 'translateX(100%)',
+          transition:'transform 0.35s cubic-bezier(0.4,0,0.2,1)',
+          boxShadow:'-8px 0 40px rgba(18,10,6,0.18)',
+          fontFamily:'Jost, sans-serif',
+        }}
+      >
 
         {/* Header */}
-        <div className="cart-head">
-          <h2 className="cart-head-title">Your Cart</h2>
+        <div style={{
+          display:'flex', alignItems:'center', justifyContent:'space-between',
+          padding:'20px 24px', borderBottom:`1px solid ${T.border}`,
+          flexShrink:0,
+        }}>
+          <div>
+            <h2 style={{ fontFamily:'Cormorant Garamond, serif', fontSize:22, fontWeight:400, margin:0 }}>
+              Your Cart
+            </h2>
+            {count > 0 && (
+              <p style={{ margin:'2px 0 0', fontSize:12, color:T.muted }}>
+                {count} item{count !== 1 ? 's' : ''}
+              </p>
+            )}
+          </div>
           <button
-            className="modal-x"
-            onClick={onClose}
+            onClick={closeDrawer}
             aria-label="Close cart"
             style={{
-              position: 'static',
-              fontSize: '26px',
-              cursor: 'pointer',
-              border: 'none',
-              background: 'transparent',
+              width:36, height:36, borderRadius:'50%', border:`1px solid ${T.border}`,
+              background:'none', cursor:'pointer', fontSize:18, color:T.muted,
+              display:'flex', alignItems:'center', justifyContent:'center',
+              transition:'all 0.18s',
             }}
-          >
-            ×
-          </button>
+            onMouseEnter={e => { e.currentTarget.style.background = T.creamD; e.currentTarget.style.color = T.dark; }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = T.muted; }}
+          >×</button>
         </div>
 
-        {/* Body */}
-        <div className="cart-body">
-          {!token ? (
-            <div className="cart-nil">
-              <p className="cart-nil-text">Please sign in to view your cart.</p>
+        {/* Body — scrollable */}
+        <div style={{ flex:1, overflowY:'auto', padding:'8px 0' }}>
+
+          {loading && (
+            <div style={{ display:'flex', justifyContent:'center', padding:40 }}>
+              <div style={{
+                width:28, height:28, border:`2px solid ${T.border}`,
+                borderTopColor:T.terra, borderRadius:'50%',
+                animation:'spin 0.7s linear infinite',
+              }} />
             </div>
+          )}
 
-          ) : loading ? (
-            <div className="cart-nil">
-              <p className="cart-nil-text">Loading…</p>
+          {!loading && items.length === 0 && (
+            <div style={{ textAlign:'center', padding:'60px 24px' }}>
+              <div style={{ fontSize:48, marginBottom:16 }}>🛒</div>
+              <p style={{ fontFamily:'Cormorant Garamond, serif', fontSize:20, fontWeight:300, marginBottom:8 }}>
+                Your cart is empty
+              </p>
+              <p style={{ fontSize:13, color:T.muted, marginBottom:24 }}>
+                Discover our handcrafted collection
+              </p>
+              <button
+                onClick={() => { closeDrawer(); navigate('/products'); }}
+                style={{
+                  padding:'11px 32px', background:T.dark, color:T.cream,
+                  border:'none', fontSize:11, letterSpacing:'0.14em',
+                  textTransform:'uppercase', cursor:'pointer',
+                  fontFamily:'Jost, sans-serif', borderRadius:4,
+                }}
+              >
+                Shop Now
+              </button>
             </div>
+          )}
 
-          ) : !cart || !cart.items || cart.items.length === 0 ? (
-            <div className="cart-nil">
-              <div className="cart-nil-icon">∅</div>
-              <p className="cart-nil-text">Your cart is empty</p>
-            </div>
+          {!loading && items.map((item) => {
+            const product = item.product || {};
+            const itemTotal = parseFloat(product.price || 0) * item.quantity;
+            const isTemp = String(item.id).startsWith('temp-');
 
-          ) : (
-            cart.items.map((item) => {
-              // FIX: safe navigation — backend nests product info under item.product
-              const price = parseFloat(item.product?.price || 0);
-              const name  = item.product?.name      || 'Unknown Item';
-              const img   = item.product?.image_url || null;
+            return (
+              <div
+                key={item.id}
+                style={{
+                  display:'grid',
+                  gridTemplateColumns:'72px 1fr',
+                  gap:14, padding:'16px 24px',
+                  borderBottom:`1px solid ${T.border}`,
+                  opacity: isTemp ? 0.6 : 1,
+                  transition:'opacity 0.2s',
+                }}
+              >
+                {/* Product image */}
+                <div style={{
+                  width:72, height:72, borderRadius:6, overflow:'hidden',
+                  background:T.creamD, flexShrink:0,
+                }}>
+                  {product.image_url
+                    ? <img src={product.image_url} alt={product.name}
+                        style={{ width:'100%', height:'100%', objectFit:'cover' }} />
+                    : <div style={{ width:'100%', height:'100%',
+                                     background:'linear-gradient(135deg,#2C1F17,#3D2B1A)' }} />
+                  }
+                </div>
 
-              return (
-                <div className="cart-item" key={item.id}>
-                  {/* Product thumbnail */}
-                  <div className="ci-img">
-                    <div
-                      className="ci-img-bg"
-                      style={{ overflow: 'hidden' }}
-                    >
-                      {img && (
-                        <img
-                          src={img}
-                          alt={name}
-                          style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                        />
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Name & qty */}
-                  <div>
-                    {/* FIX: item.product?.name */}
-                    <p className="ci-name">{name}</p>
-                    <p className="ci-qty">Qty: {item.quantity}</p>
-                  </div>
-
-                  {/* Price & remove */}
-                  <div style={{ display: 'flex', alignItems: 'center' }}>
-                    {/* FIX: (item.product?.price || 0) * item.quantity */}
-                    <span className="ci-price">
-                      ₹{(price * item.quantity).toLocaleString('en-IN')}
-                    </span>
-
-                    {/* FIX: remove button passes the CartItem ID (item.id),
-                        not the product ID (item.product?.id) */}
+                {/* Details */}
+                <div style={{ display:'flex', flexDirection:'column', gap:6, minWidth:0 }}>
+                  <div style={{ display:'flex', justifyContent:'space-between', gap:8 }}>
+                    <p style={{ margin:0, fontWeight:600, fontSize:13,
+                                 overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap',
+                                 flex:1 }}>
+                      {product.name || 'Loading…'}
+                    </p>
                     <button
-                      className="ci-remove"
-                      onClick={() => handleRemove(item.id)}
+                      onClick={() => removeItem(item.id)}
                       aria-label="Remove item"
                       style={{
-                        cursor: 'pointer',
-                        border: 'none',
-                        background: 'transparent',
-                        fontSize: '18px',
-                        marginLeft: '8px',
+                        background:'none', border:'none', cursor:'pointer',
+                        color:T.muted, fontSize:15, padding:'0 2px', flexShrink:0,
+                        transition:'color 0.15s',
                       }}
-                    >
-                      ×
-                    </button>
+                      onMouseEnter={e => e.currentTarget.style.color = T.terra}
+                      onMouseLeave={e => e.currentTarget.style.color = T.muted}
+                    >×</button>
+                  </div>
+
+                  {product.category && (
+                    <p style={{ margin:0, fontSize:11, color:T.muted }}>{product.category}</p>
+                  )}
+
+                  <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginTop:4 }}>
+                    <QtyControl
+                      value={item.quantity}
+                      onChange={(newQty) => updateQty(product.id || item.product_id, newQty)}
+                    />
+                    <span style={{ fontWeight:700, fontSize:14 }}>
+                      {fmtINR(itemTotal)}
+                    </span>
                   </div>
                 </div>
-              );
-            })
-          )}
+              </div>
+            );
+          })}
         </div>
 
-        {/* Footer — always render, guard against null cart */}
-        <div className="cart-foot">
-          <div className="cart-total-row">
-            <span className="cart-total-lbl">Total</span>
-            <span className="cart-total-val">
-              {/* FIX: safe parse of cart_total — it comes back as a Decimal string */}
-              ₹{cart
-                ? parseFloat(cart.cart_total || 0).toLocaleString('en-IN')
-                : subtotal.toLocaleString('en-IN')}
-            </span>
+        {/* Footer — subtotal + actions */}
+        {items.length > 0 && (
+          <div style={{
+            flexShrink:0, padding:'20px 24px',
+            borderTop:`1px solid ${T.border}`, background:'#fff',
+          }}>
+            {/* Subtotal */}
+            <div style={{ display:'flex', justifyContent:'space-between', marginBottom:6 }}>
+              <span style={{ fontSize:13, color:T.muted }}>Subtotal</span>
+              <span style={{ fontSize:14, fontWeight:600 }}>{fmtINR(total)}</span>
+            </div>
+            <p style={{ fontSize:11, color:T.muted, marginBottom:16 }}>
+              Shipping & taxes calculated at checkout
+            </p>
+
+            {/* Checkout CTA */}
+            <button
+              onClick={handleCheckout}
+              style={{
+                width:'100%', padding:'14px', background:T.terra, color:'#fff',
+                border:'none', borderRadius:4, fontSize:12,
+                letterSpacing:'0.14em', textTransform:'uppercase',
+                cursor:'pointer', fontFamily:'Jost, sans-serif',
+                fontWeight:600, marginBottom:10,
+                transition:'background 0.2s',
+              }}
+              onMouseEnter={e => e.currentTarget.style.background = T.darkMid}
+              onMouseLeave={e => e.currentTarget.style.background = T.terra}
+            >
+              Proceed to Checkout — {fmtINR(total)}
+            </button>
+
+            {/* Continue shopping */}
+            <button
+              onClick={closeDrawer}
+              style={{
+                width:'100%', padding:'11px', background:'none',
+                border:`1px solid ${T.border}`, borderRadius:4,
+                fontSize:11, letterSpacing:'0.12em', textTransform:'uppercase',
+                cursor:'pointer', fontFamily:'Jost, sans-serif',
+                color:T.muted, transition:'all 0.18s',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.borderColor = T.dark; e.currentTarget.style.color = T.dark; }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor = T.border; e.currentTarget.style.color = T.muted; }}
+            >
+              Continue Shopping
+            </button>
+
+            {/* Clear cart */}
+            <button
+              onClick={clearCart}
+              style={{
+                display:'block', margin:'10px auto 0', background:'none',
+                border:'none', fontSize:11, color:T.muted, cursor:'pointer',
+                textDecoration:'underline', fontFamily:'Jost, sans-serif',
+              }}
+            >
+              Clear cart
+            </button>
           </div>
-
-          <button
-            className="btn-checkout"
-            onClick={() => { window.location.href = '/checkout'; }}
-            disabled={!cart || !cart.items || cart.items.length === 0}
-          >
-            Proceed to Checkout
-          </button>
-        </div>
-
+        )}
       </div>
+
+      <style>{`
+        @keyframes spin { to { transform: rotate(360deg); } }
+      `}</style>
     </>
   );
 }

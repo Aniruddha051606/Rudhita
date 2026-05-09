@@ -5,6 +5,8 @@ import { Button } from '../components/Button';
 import { Badge } from '../components/Badge';
 import { Loader } from '../components/Loader';
 import { API } from '../utils/api';
+import { useCart } from '../context/CartContext';
+import ProductReviews from '../components/ProductReviews';
 import './Pages.css';
 
 export function ProductDetailPage() {
@@ -16,7 +18,7 @@ export function ProductDetailPage() {
   const [selectedSize, setSelectedSize] = useState(null);
   const [quantity, setQuantity] = useState(1);
   const [mainImageIndex, setMainImageIndex] = useState(0);
-  const [reviews, setReviews] = useState([]);
+  const { addItem } = useCart();
 
   useEffect(() => {
     loadProduct();
@@ -38,10 +40,6 @@ export function ProductDetailPage() {
         }
       }
 
-      setReviews([
-        { id: 1, author: 'John Doe',   rating: 5, text: 'Amazing quality and fit! Highly recommend.', date: '2024-01-15' },
-        { id: 2, author: 'Jane Smith', rating: 4, text: 'Great t-shirt, perfect oversized fit.',       date: '2024-01-10' },
-      ]);
     } catch (error) {
       console.error('Error loading product:', error);
     } finally {
@@ -49,18 +47,12 @@ export function ProductDetailPage() {
     }
   };
 
-  // BUG 19 FIX: was a console.log TODO — now calls API.cart.add
-  const handleAddToCart = async () => {
+  const handleAddToCart = () => {
     if (!selectedSize) {
       alert('Please select a size');
       return;
     }
-    try {
-      await API.cart.add(product.id, quantity);
-      alert(`${product.name} added to cart!`);
-    } catch (error) {
-      alert(error.message || 'Failed to add to cart. Please log in first.');
-    }
+    addItem(product.id, quantity);
   };
 
   const colors = [
@@ -200,26 +192,7 @@ export function ProductDetailPage() {
       </div>
 
       {/* Reviews */}
-      <div className="product-reviews-section">
-        <div className="reviews-header">
-          <h2 style={{ fontSize: '24px', fontFamily: 'var(--font-serif)', fontWeight: 'var(--font-weight-normal)' }}>Customer Reviews</h2>
-          <Button variant="outline">Write a Review</Button>
-        </div>
-        <div>
-          {reviews.map(review => (
-            <div key={review.id} className="review-item">
-              <div className="review-header">
-                <div>
-                  <p className="review-author">{review.author}</p>
-                  <p style={{ fontSize: '12px', opacity: '0.6' }}>{review.date}</p>
-                </div>
-                <div className="review-rating">{'★'.repeat(review.rating)}{'☆'.repeat(5 - review.rating)}</div>
-              </div>
-              <p className="review-text">{review.text}</p>
-            </div>
-          ))}
-        </div>
-      </div>
+      <ProductReviews productId={product.id} />
 
       {/* Related Products */}
       {relatedProducts.length > 0 && (
@@ -229,7 +202,7 @@ export function ProductDetailPage() {
           </h2>
           <div className="prod-grid">
             {relatedProducts.map(p => (
-              <ProductCard key={p.id} id={p.id} title={p.name} price={p.price} originalPrice={p.original_price} image={p.image_url} tag={p.category} />
+              <ProductCard key={p.id} id={p.id} title={p.name} price={p.price} originalPrice={p.original_price} image={p.image_url} tag={p.category} onAddToCart={(id) => addItem(id, 1)} />
             ))}
           </div>
         </section>

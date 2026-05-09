@@ -1,6 +1,7 @@
 // src/components/AuthModal.jsx
 import React, { useState, useEffect } from 'react';
 import { API, setAuthTokens } from '../utils/api';
+import GoogleLoginButton from './GoogleLoginButton';
 
 export default function AuthModal({ isOpen, onClose }) {
   // Modes: 'login' | 'register' | 'otp'
@@ -105,6 +106,15 @@ export default function AuthModal({ isOpen, onClose }) {
         {/* ── LOGIN FORM ── */}
         {mode === 'login' && (
           <div className="mform active">
+            <GoogleLoginButton
+              onSuccess={() => { window.location.reload(); }}
+              onError={(msg) => setError(msg || 'Google sign-in failed.')}
+            />
+            <div style={{ display:'flex', alignItems:'center', gap:12, margin:'16px 0' }}>
+              <div style={{ flex:1, height:1, background:'rgba(24,16,12,0.1)' }} />
+              <span style={{ fontSize:11, color:'rgba(24,16,12,0.4)', letterSpacing:'0.1em', textTransform:'uppercase' }}>or</span>
+              <div style={{ flex:1, height:1, background:'rgba(24,16,12,0.1)' }} />
+            </div>
             <div className="fg">
               <label>Email</label>
               <input
@@ -130,6 +140,15 @@ export default function AuthModal({ isOpen, onClose }) {
         {/* ── REGISTER FORM ── */}
         {mode === 'register' && (
           <div className="mform active">
+            <GoogleLoginButton
+              onSuccess={() => { window.location.reload(); }}
+              onError={(msg) => setError(msg || 'Google sign-in failed.')}
+            />
+            <div style={{ display:'flex', alignItems:'center', gap:12, margin:'16px 0' }}>
+              <div style={{ flex:1, height:1, background:'rgba(24,16,12,0.1)' }} />
+              <span style={{ fontSize:11, color:'rgba(24,16,12,0.4)', letterSpacing:'0.1em', textTransform:'uppercase' }}>or</span>
+              <div style={{ flex:1, height:1, background:'rgba(24,16,12,0.1)' }} />
+            </div>
             <div className="fg">
               <label>Full Name</label>
               <input

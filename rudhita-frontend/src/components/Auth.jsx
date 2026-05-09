@@ -2,6 +2,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { API, setAuthTokens } from '../utils/api';
+import GoogleLoginButton from './GoogleLoginButton';
 
 export default function Auth() {
   // Modes: 'login' | 'register' | 'verify'
@@ -71,6 +72,23 @@ export default function Auth() {
         <p style={{ color: 'red', textAlign: 'center', marginBottom: '1rem' }}>
           {error}
         </p>
+      )}
+
+      {/* Google sign-in — shown in login + register modes only */}
+      {mode !== 'verify' && (
+        <>
+          <GoogleLoginButton
+            onSuccess={() => { window.location.href = '/'; }}
+            onError={(msg) => setError(msg || 'Google sign-in failed.')}
+          />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, margin: '18px 0' }}>
+            <div style={{ flex: 1, height: 1, background: 'rgba(24,16,12,0.1)' }} />
+            <span style={{ fontSize: 11, color: 'rgba(24,16,12,0.4)', letterSpacing: '0.1em', textTransform: 'uppercase' }}>
+              or
+            </span>
+            <div style={{ flex: 1, height: 1, background: 'rgba(24,16,12,0.1)' }} />
+          </div>
+        </>
       )}
 
       <form className="auth-form" onSubmit={handleSubmit}>

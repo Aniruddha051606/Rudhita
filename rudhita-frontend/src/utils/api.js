@@ -97,6 +97,13 @@ export const API = {
       }),
 
     me: () => fetchAPI("/auth/me"),
+
+    /** Phase 3: verify a Google id_token on the backend and receive Rudhita tokens. */
+    googleLogin: (idToken) =>
+      fetchAPI("/auth/google", {
+        method: "POST",
+        body:   JSON.stringify({ id_token: idToken }),
+      }),
   },
 
   // ── Products ───────────────────────────────────────────────────────────────
@@ -155,6 +162,31 @@ export const API = {
       fetchAPI(`/user/addresses/${id}`, { method: "PUT", body: JSON.stringify(data) }),
     deleteAddress: (id)        =>
       fetchAPI(`/user/addresses/${id}`, { method: "DELETE" }),
+  },
+
+  // ── Reviews (Phase 3) ─────────────────────────────────────────────────────
+  reviews: {
+    /** GET /products/{id}/reviews */
+    getForProduct: (productId) => fetchAPI(`/products/${productId}/reviews`),
+    list:          (productId) => fetchAPI(`/products/${productId}/reviews`),
+    /** GET /products/{id}/reviews/summary */
+    summary:       (productId) => fetchAPI(`/products/${productId}/reviews/summary`),
+    /** POST /products/{id}/reviews */
+    create: (productId, data) =>
+      fetchAPI(`/products/${productId}/reviews`, {
+        method: "POST",
+        body:   JSON.stringify(data),
+      }),
+  },
+
+  // ── Wishlist (Phase 3) ────────────────────────────────────────────────────
+  wishlist: {
+    getItems:   ()          => fetchAPI("/wishlist"),
+    toggleItem: (productId) =>
+      fetchAPI("/wishlist/toggle", {
+        method: "POST",
+        body:   JSON.stringify({ product_id: productId }),
+      }),
   },
 
   // ── Admin ──────────────────────────────────────────────────────────────────

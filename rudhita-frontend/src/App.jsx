@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { BrowserRouter as Router, Routes, Route, Link, useLocation } from 'react-router-dom';
+import { Routes, Route, Link, useLocation } from 'react-router-dom';
 import { API, isAuthenticated, clearAuthTokens } from './utils/api';
+import { useCart } from './context/CartContext';
 
 // Pages
 import HomePage from './pages/HomePage';
@@ -20,7 +21,6 @@ import ProtectedRoute from './components/ProtectedRoute';
 // Legacy Components (to be refactored)
 import Home from './components/Home';
 import AuthModal from './components/AuthModal';
-import CartSidebar from './components/CartSidebar';
 
 function AppLayout({ children, isLoggedIn, onLogout, onOpenAuth, onOpenCart, cartCount }) {
   const location = useLocation();
@@ -95,18 +95,8 @@ function AppLayout({ children, isLoggedIn, onLogout, onOpenAuth, onOpenCart, car
 
 function App() {
   const [isAuthOpen, setIsAuthOpen] = useState(false);
-  const [isCartOpen, setIsCartOpen] = useState(false);
-  const [cartCount, setCartCount] = useState(0);
   const isLoggedIn = isAuthenticated();
-
-  // Fetch initial cart count on mount
-  useEffect(() => {
-    if (isLoggedIn) {
-      API.cart.get()
-        .then(data => setCartCount(data.items?.length || 0))
-        .catch(() => {});
-    }
-  }, [isLoggedIn]);
+  const { count: cartCount, openDrawer, addItem } = useCart();
 
   // BUG 5 FIX: clear both tokens, call backend to blocklist JTI
   const handleLogout = async () => {
@@ -115,30 +105,23 @@ function App() {
     window.location.href = '/';
   };
 
-  const handleAddToCart = async (productId) => {
+  const handleAddToCart = (productId) => {
     if (!isLoggedIn) {
       setIsAuthOpen(true);
       return;
     }
-    try {
-      const data = await API.cart.add(productId, 1);
-      setCartCount(data.items?.length || 0);
-      setIsCartOpen(true);
-    } catch (error) {
-      alert(error.message || "Failed to add item to cart.");
-    }
+    addItem(productId, 1); // CartContext handles the API call, drawer, and error
   };
 
   return (
-    <Router>
-      <AppLayout
-        isLoggedIn={isLoggedIn}
-        onLogout={handleLogout}
-        onOpenAuth={() => setIsAuthOpen(true)}
-        onOpenCart={() => setIsCartOpen(true)}
-        cartCount={cartCount}
-      >
-        <Routes>
+    <AppLayout
+      isLoggedIn={isLoggedIn}
+      onLogout={handleLogout}
+      onOpenAuth={() => setIsAuthOpen(true)}
+      onOpenCart={openDrawer}
+      cartCount={cartCount}
+    >
+      <Routes>
           {/* Public Routes */}
           <Route path="/" element={<HomePage onAddToCart={handleAddToCart} />} />
           <Route path="/products" element={<ProductCatalogPage />} />
@@ -193,12 +176,10 @@ function App() {
           {/* Fallback Route */}
           <Route path="*" element={<div style={{ padding: '40px', textAlign: 'center' }}>Page not found</div>} />
         </Routes>
-      </AppLayout>
 
-      {/* --- MODALS --- */}
-      <AuthModal isOpen={isAuthOpen} onClose={() => setIsAuthOpen(false)} />
-      <CartSidebar isOpen={isCartOpen} onClose={() => setIsCartOpen(false)} onCartUpdate={setCartCount} />
-    </Router>
+        {/* --- MODALS --- */}
+        <AuthModal isOpen={isAuthOpen} onClose={() => setIsAuthOpen(false)} />
+    </AppLayout>
   );
 }
 

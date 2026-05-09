@@ -1,9 +1,11 @@
 import { useState, useEffect } from "react";
 import { fetchAPI } from "../utils/api";
+import { useCart } from "../context/CartContext";
 
 export default function Storefront() {
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(true);
+  const { addItem } = useCart();
 
   useEffect(() => {
     const loadCatalog = async () => {
@@ -20,16 +22,8 @@ export default function Storefront() {
     loadCatalog();
   }, []);
 
-  const handleAddToCart = async (productId) => {
-    try {
-      await fetchAPI("/cart/add", {
-        method: "POST",
-        body: JSON.stringify({ product_id: productId, quantity: 1 }),
-      });
-      alert("Added to cart!");
-    } catch (error) {
-      alert(error.message || "Please log in to add items to your cart.");
-    }
+  const handleAddToCart = (productId) => {
+    addItem(productId, 1);
   };
 
   if (loading) return <h3 style={{ padding: '2rem' }}>Loading the Rudhita Collection...</h3>;
