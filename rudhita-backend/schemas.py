@@ -354,3 +354,149 @@ class AdminUserResponse(BaseModel):
     is_admin:   bool
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
+"""
+schemas_phase2_additions.py
+===========================
+Paste the contents below at the BOTTOM of your existing schemas.py.
+
+These are the new Pydantic schemas introduced in Phase 2 for:
+  - Fulfillment endpoints
+  - Bulk-fulfill request/response
+  - Inventory snapshot
+"""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PHASE 2 — FULFILLMENT
+# ─────────────────────────────────────────────────────────────────────────────
+
+class FulfillOrderRequest(BaseModel):
+    """Body for POST /admin/orders/{id}/fulfill"""
+    carrier:          Optional[str] = Field(default=None, max_length=100,
+                                             description="Carrier name e.g. 'Delhivery'")
+    tracking_number:  Optional[str] = Field(default=None, max_length=100,
+                                             description="Waybill / tracking number")
+    notes:            Optional[str] = Field(default=None, max_length=500,
+                                             description="Internal admin note for this shipment")
+
+
+class FulfillmentItemResponse(BaseModel):
+    order_item_id: int
+    quantity:      int
+    model_config = ConfigDict(from_attributes=True)
+
+
+class FulfillmentResponse(BaseModel):
+    id:              int
+    order_id:        int
+    status:          str
+    carrier:         Optional[str]      = None
+    tracking_number: Optional[str]      = None
+    shipped_at:      Optional[datetime] = None
+    items:           List[FulfillmentItemResponse] = []
+    model_config = ConfigDict(from_attributes=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PHASE 2 — BULK FULFILL
+# ─────────────────────────────────────────────────────────────────────────────
+
+class BulkFulfillRequest(BaseModel):
+    """Body for POST /admin/orders/bulk-fulfill"""
+    order_ids: List[int] = Field(
+        min_length=1,
+        max_length=50,
+        description="List of order IDs to fulfill. Max 50 per call.",
+    )
+
+
+class BulkFulfillResponse(BaseModel):
+    status:    str
+    message:   str
+    total:     int
+    order_ids: List[int]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PHASE 2 — INVENTORY
+# ─────────────────────────────────────────────────────────────────────────────
+
+class InventoryLevelResponse(BaseModel):
+    """Row returned by GET /admin/inventory"""
+    product_id:    int
+    product_name:  str
+    sku:           str
+    location_id:   int
+    location_name: str
+    available:     int
+    committed:     int
+    unavailable:   int
+    total_on_hand: int
+
+
+class InventoryAdjustRequest(BaseModel):
+    """Body for POST /admin/inventory/adjust (Phase 3+)"""
+    product_id:     int
+    location_id:    int
+    bucket:         str = Field(pattern=r"^(available|committed|unavailable)$")
+    quantity_delta: int = Field(
+        description="Signed integer. Positive = add stock, Negative = remove."
+    )
+    notes: Optional[str] = Field(default=None, max_length=500)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PHASE 3 — GOOGLE AUTH
+# ─────────────────────────────────────────────────────────────────────────────
+
+class GoogleAuthRequest(BaseModel):
+    id_token: str
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PHASE 3 — REVIEWS
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ReviewCreate(BaseModel):
+    rating: int         = Field(ge=1, le=5)
+    title:  Optional[str] = Field(default=None, max_length=200)
+    body:   Optional[str] = None
+
+
+class ReviewUpdate(BaseModel):
+    rating: Optional[int] = Field(default=None, ge=1, le=5)
+    title:  Optional[str] = Field(default=None, max_length=200)
+    body:   Optional[str] = None
+
+
+class ReviewResponse(BaseModel):
+    id:           int
+    product_id:   int
+    user_id:      int
+    rating:       int
+    title:        Optional[str] = None
+    body:         Optional[str] = None
+    is_verified:  bool
+    created_at:   datetime
+    author_name:  Optional[str] = None
+    author_avatar: Optional[str] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ProductRatingSummary(BaseModel):
+    product_id:     int
+    average_rating: float
+    review_count:   int
+    distribution:   dict   # {1: N, 2: N, 3: N, 4: N, 5: N}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PHASE 3 — WISHLIST
+# ─────────────────────────────────────────────────────────────────────────────
+
+class WishlistItemResponse(BaseModel):
+    id:         int
+    product_id: int
+    product:    ProductResponse
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+

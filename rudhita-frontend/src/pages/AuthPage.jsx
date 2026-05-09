@@ -1,6 +1,5 @@
 // src/pages/AuthPage.jsx
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { Input } from '../components/Input';
 import { Button } from '../components/Button';
 
@@ -15,7 +14,6 @@ import { API, setAuthTokens } from '../utils/api';
 import './AuthPage.css';
 
 export function AuthPage() {
-  const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState('login');
   const [isLoading, setIsLoading] = useState(false);
   const [message, setMessage] = useState('');
@@ -96,8 +94,9 @@ export function AuthPage() {
           access_token:  response.access_token,
           refresh_token: response.refresh_token,
         });
-        setMessage('Login successful! Redirecting...');
-        setTimeout(() => navigate('/'), 1200);
+        // Hard reload so App re-mounts and reads the fresh token from localStorage.
+        // navigate('/') is a soft nav that does not guarantee App re-renders.
+        window.location.href = '/';
       } else {
         setMessage('Login failed. Please try again.');
       }

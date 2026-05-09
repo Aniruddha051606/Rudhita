@@ -1,13 +1,11 @@
 // src/components/Auth.jsx
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { API, setAuthTokens } from '../utils/api';
 import GoogleLoginButton from './GoogleLoginButton';
 
 export default function Auth() {
   // Modes: 'login' | 'register' | 'verify'
   const [mode, setMode] = useState('login');
-  const navigate = useNavigate();
 
   // Form state
   const [email,    setEmail]    = useState('');
