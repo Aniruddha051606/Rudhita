@@ -35,9 +35,14 @@ export const fetchAPI = async (endpoint, options = {}) => {
 
     if (!response.ok) {
       if (response.status === 401) {
+        console.error('[fetchAPI] Auth validation failed (401) on', endpoint,
+          '— clearing session tokens');
         localStorage.removeItem("rudhita_token");
         localStorage.removeItem("rudhita_refresh_token");
-        window.location.href = "/auth";
+        // Do NOT hard-redirect here. A hard window.location.href races with
+        // React Router's render cycle: ProtectedRoute reads hasToken from
+        // localStorage, sees it cleared, and navigates to /auth via React
+        // Router on its next render — no full page reload, no loop.
       }
       throw new APIError(
         data.detail || data.message || "Something went wrong",
@@ -285,12 +290,28 @@ export const API = {
 export const isAuthenticated = () => !!localStorage.getItem("rudhita_token");
 export const getAuthToken    = () => localStorage.getItem("rudhita_token");
 
-/** Persist both tokens from the login response. */
-export const setAuthTokens = ({ access_token, refresh_token } = {}) => {
-  if (access_token)  localStorage.setItem("rudhita_token",         access_token);
-  else               localStorage.removeItem("rudhita_token");
-  if (refresh_token) localStorage.setItem("rudhita_refresh_token",  refresh_token);
-  else               localStorage.removeItem("rudhita_refresh_token");
+/** Persist both tokens from the login response.
+ *  Accepts { access_token, refresh_token } or alternate shapes like
+ *  { token, refresh } — whichever the backend sends.
+ *  Validates that the value is an actual string before writing to localStorage
+ *  so we never accidentally store "[object Object]".
+ */
+export const setAuthTokens = (tokens = {}) => {
+  const accessToken  = tokens.access_token  || tokens.token        || null;
+  const refreshToken = tokens.refresh_token || tokens.refresh      || null;
+
+  if (typeof accessToken === 'string' && accessToken) {
+    localStorage.setItem("rudhita_token", accessToken);
+  } else {
+    console.error('[setAuthTokens] No valid access_token in response:', tokens);
+    localStorage.removeItem("rudhita_token");
+  }
+
+  if (typeof refreshToken === 'string' && refreshToken) {
+    localStorage.setItem("rudhita_refresh_token", refreshToken);
+  } else {
+    localStorage.removeItem("rudhita_refresh_token");
+  }
 };
 
 export const clearAuthTokens = () => {

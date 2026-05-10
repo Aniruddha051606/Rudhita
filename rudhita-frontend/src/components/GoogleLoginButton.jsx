@@ -32,6 +32,7 @@ export default function GoogleLoginButton({ onSuccess, onError }) {
     setLoading(true);
     try {
       const tokens = await API.auth.googleLogin(credentialResponse.credential);
+      console.log('[GoogleLogin] backend response:', JSON.stringify(tokens));
       setAuthTokens(tokens);
       onSuccess?.(tokens);
     } catch (err) {
@@ -66,7 +67,7 @@ export default function GoogleLoginButton({ onSuccess, onError }) {
         shape="rectangular"
         theme="outline"
         size="large"
-        width="100%"
+        width={400}
         text="continue_with"
         locale="en"
       />
