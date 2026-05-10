@@ -1,32 +1,30 @@
 import React, { useState, useEffect } from 'react';
-import { Routes, Route, Link, useLocation } from 'react-router-dom';
+import { Routes, Route, useLocation } from 'react-router-dom';
 import { API, isAuthenticated, clearAuthTokens } from './utils/api';
 import { useCart } from './context/CartContext';
 
 // Pages
-import HomePage from './pages/HomePage';
-import ProductCatalogPage from './pages/ProductCatalogPage';
-import ProductDetailPage from './pages/ProductDetailPage';
-import CartPage from './pages/CartPage';
-import AuthPage from './pages/AuthPage';
-import UserAccountPage from './pages/UserAccountPage';
-import CheckoutPage from './pages/CheckoutPage';
+import HomePage             from './pages/HomePage';
+import ProductCatalogPage   from './pages/ProductCatalogPage';
+import ProductDetailPage    from './pages/ProductDetailPage';
+import CartPage             from './pages/CartPage';
+import AuthPage             from './pages/AuthPage';
+import UserAccountPage      from './pages/UserAccountPage';
+import CheckoutPage         from './pages/CheckoutPage';
 import OrderConfirmationPage from './pages/OrderConfirmationPage';
-import OrderTrackingPage from './pages/OrderTrackingPage';
-import AdminDashboardPage from './pages/AdminDashboardPage';
+import OrderTrackingPage    from './pages/OrderTrackingPage';
+import AdminDashboardPage   from './pages/AdminDashboardPage';
 
 // Components
 import ProtectedRoute from './components/ProtectedRoute';
+import Header         from './components/Header';
+import AuthModal      from './components/AuthModal';
 
-// Legacy Components (to be refactored)
-import Home from './components/Home';
-import AuthModal from './components/AuthModal';
-
-function AppLayout({ children, isLoggedIn, onLogout, onOpenAuth, onOpenCart, cartCount }) {
+function AppLayout({ children, onLogout, onOpenAuth, onOpenCart, cartCount }) {
   const location = useLocation();
   const hideNavFooter = location.pathname === '/auth' || location.pathname.startsWith('/admin');
 
-  // Nav Scroll Effect
+  // Nav scroll effect
   useEffect(() => {
     const handleScroll = () => {
       document.getElementById('nav')?.classList.toggle('scrolled', window.scrollY > 50);
@@ -41,38 +39,12 @@ function AppLayout({ children, isLoggedIn, onLogout, onOpenAuth, onOpenCart, car
 
   return (
     <>
-      <div className="announce">
-        <div className="marquee">
-          <span>Complimentary shipping on orders above â‚¹3,000</span>
-          <span>Handcrafted with intention, designed for life</span>
-          <span>New arrivals â€” Monsoon Edit 2026 now live</span>
-          <span>All pieces made to order across India</span>
-        </div>
-      </div>
-
-      <nav id="nav">
-        <div className="nav-inner">
-          <div className="nav-left">
-            <Link to="/products">Shop</Link>
-            <Link to="/#philosophy">Story</Link>
-            <a href="mailto:hello@rudhita.com">Contact</a>
-          </div>
-          <Link to="/" className="nav-logo">Rudhita</Link>
-          <div className="nav-right">
-            {isLoggedIn ? (
-              <>
-                <Link to="/account" className="nav-link">Account</Link>
-                <button className="nav-link" onClick={onLogout}>Logout</button>
-              </>
-            ) : (
-              <button className="nav-link" onClick={onOpenAuth}>Account</button>
-            )}
-            <button className="cart-pill" onClick={onOpenCart}>
-              Cart <span className="cart-dot" style={{ display: cartCount > 0 ? 'flex' : 'none' }}>{cartCount}</span>
-            </button>
-          </div>
-        </div>
-      </nav>
+      <Header
+        onLogout={onLogout}
+        onOpenAuth={onOpenAuth}
+        onOpenCart={onOpenCart}
+        cartCount={cartCount}
+      />
 
       <main>
         {children}
@@ -115,7 +87,6 @@ function App() {
 
   return (
     <AppLayout
-      isLoggedIn={isLoggedIn}
       onLogout={handleLogout}
       onOpenAuth={() => setIsAuthOpen(true)}
       onOpenCart={openDrawer}
