@@ -290,27 +290,26 @@ export const API = {
 export const isAuthenticated = () => !!localStorage.getItem("rudhita_token");
 export const getAuthToken    = () => localStorage.getItem("rudhita_token");
 
-/** Persist both tokens from the login response.
- *  Accepts { access_token, refresh_token } or alternate shapes like
- *  { token, refresh } — whichever the backend sends.
- *  Validates that the value is an actual string before writing to localStorage
- *  so we never accidentally store "[object Object]".
- */
-export const setAuthTokens = (tokens = {}) => {
-  const accessToken  = tokens.access_token  || tokens.token        || null;
-  const refreshToken = tokens.refresh_token || tokens.refresh      || null;
+export const setAuthTokens = (data) => {
+  if (!data) return;
 
-  if (typeof accessToken === 'string' && accessToken) {
-    localStorage.setItem("rudhita_token", accessToken);
+  // Extract access token — handles { access_token }, { token }, or a raw string
+  const accessToken = data.access_token || data.token
+    || (typeof data === 'string' ? data : null);
+
+  if (accessToken) {
+    localStorage.setItem('rudhita_token', accessToken);
   } else {
-    console.error('[setAuthTokens] No valid access_token in response:', tokens);
-    localStorage.removeItem("rudhita_token");
+    console.error('[setAuthTokens] Failed to extract token string from:', data);
+    localStorage.removeItem('rudhita_token');
   }
 
-  if (typeof refreshToken === 'string' && refreshToken) {
-    localStorage.setItem("rudhita_refresh_token", refreshToken);
+  // Extract refresh token — needed by API.auth.logout() to blocklist on backend
+  const refreshToken = data.refresh_token || data.refresh || null;
+  if (refreshToken) {
+    localStorage.setItem('rudhita_refresh_token', refreshToken);
   } else {
-    localStorage.removeItem("rudhita_refresh_token");
+    localStorage.removeItem('rudhita_refresh_token');
   }
 };
 
