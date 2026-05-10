@@ -67,7 +67,10 @@ function AppLayout({ children, onLogout, onOpenAuth, onOpenCart, cartCount }) {
 
 function App() {
   const [isAuthOpen, setIsAuthOpen] = useState(false);
-  const isLoggedIn = isAuthenticated();
+  // useState with lazy initializer: reads localStorage exactly once on mount.
+  // A plain `isAuthenticated()` call re-runs on every render and can go stale
+  // if the token is written concurrently (e.g. during the OAuth callback).
+  const [isLoggedIn] = useState(isAuthenticated);
   const { count: cartCount, openDrawer, addItem } = useCart();
 
   // BUG 5 FIX: clear both tokens, call backend to blocklist JTI
