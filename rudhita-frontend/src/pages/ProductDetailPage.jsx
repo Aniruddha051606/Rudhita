@@ -18,6 +18,7 @@ export function ProductDetailPage() {
   const [selectedSize, setSelectedSize] = useState(null);
   const [quantity, setQuantity] = useState(1);
   const [mainImageIndex, setMainImageIndex] = useState(0);
+  const [wishlisted, setWishlisted] = useState(false);
   const { addItem } = useCart();
 
   useEffect(() => {
@@ -44,6 +45,15 @@ export function ProductDetailPage() {
       console.error('Error loading product:', error);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleWishlist = async () => {
+    try {
+      const res = await API.wishlist.toggleItem(product.id);
+      setWishlisted(res.is_wishlisted ?? !wishlisted);
+    } catch {
+      setWishlisted(prev => !prev);
     }
   };
 
@@ -179,7 +189,9 @@ export function ProductDetailPage() {
           {/* Actions */}
           <div className="product-actions">
             <Button variant="primary" onClick={handleAddToCart}>Add to Cart</Button>
-            <Button variant="outline">♡ Wishlist</Button>
+            <Button variant="outline" onClick={handleWishlist}>
+              {wishlisted ? '♥ Wishlisted' : '♡ Wishlist'}
+            </Button>
           </div>
 
           <div style={{ marginTop: '32px', paddingTop: '32px', borderTop: '1px solid rgba(24,16,12,0.1)' }}>

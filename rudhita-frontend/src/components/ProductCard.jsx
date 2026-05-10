@@ -70,12 +70,14 @@ export function ProductCard({
             <div className="product-tag-badge">{tag}</div>
           )}
 
-          {/* Hover Actions */}
-          <div className={`product-hover-actions ${isHovering ? 'visible' : ''}`}>
-            <button className="product-quick-view-btn" onClick={handleQuickViewClick}>
-              Quick View
-            </button>
-          </div>
+          {/* Hover Actions — only shown when parent wires up onQuickView */}
+          {onQuickView && (
+            <div className={`product-hover-actions ${isHovering ? 'visible' : ''}`}>
+              <button className="product-quick-view-btn" onClick={handleQuickViewClick}>
+                Quick View
+              </button>
+            </div>
+          )}
 
           {/* Add to Cart — disabled + spinner while request is in-flight */}
           <button

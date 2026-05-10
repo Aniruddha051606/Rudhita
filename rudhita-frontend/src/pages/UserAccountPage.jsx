@@ -428,7 +428,14 @@ export function UserAccountPage() {
           <p style={{ fontSize: '14px', opacity: 0.6, marginBottom: '16px' }}>
             Once you delete your account, there is no going back.
           </p>
-          <Button variant="outline" style={{ color: 'var(--error)', borderColor: 'var(--error)' }}>
+          <Button
+            variant="outline"
+            style={{ color: 'var(--error)', borderColor: 'var(--error)' }}
+            onClick={() => {
+              if (!window.confirm('Are you sure you want to delete your account? This cannot be undone.')) return;
+              setMessage('To delete your account, please contact us at hello@rudhita.com');
+            }}
+          >
             Delete Account
           </Button>
         </div>

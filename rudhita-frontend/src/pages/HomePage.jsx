@@ -63,7 +63,12 @@ export function HomePage({ onAddToCart }) {
           </p>
           <div className="hero-actions rv rv-4">
             <Link to="/products" className="btn-solid">Explore Collection</Link>
-            <button className="btn-text">Learn Our Story</button>
+            <button
+              className="btn-text"
+              onClick={() => document.getElementById('philosophy')?.scrollIntoView({ behavior: 'smooth' })}
+            >
+              Learn Our Story
+            </button>
           </div>
         </div>
 
@@ -119,7 +124,7 @@ export function HomePage({ onAddToCart }) {
         </div>
 
         <div className="cat-grid">
-          <div className="cat-card cat-1 rv rv-1">
+          <Link to="/products?category=Essentials" className="cat-card cat-1 rv rv-1">
             <div className="cat-bg" />
             <div className="cat-flare" />
             <div className="cat-content">
@@ -129,9 +134,9 @@ export function HomePage({ onAddToCart }) {
                 <span>Explore</span> →
               </div>
             </div>
-          </div>
+          </Link>
 
-          <div className="cat-card cat-2 rv rv-2">
+          <Link to="/products?category=Premium" className="cat-card cat-2 rv rv-2">
             <div className="cat-bg" />
             <div className="cat-flare" />
             <div className="cat-content">
@@ -141,9 +146,9 @@ export function HomePage({ onAddToCart }) {
                 <span>Explore</span> →
               </div>
             </div>
-          </div>
+          </Link>
 
-          <div className="cat-card cat-3 rv rv-3">
+          <Link to="/products?category=Limited" className="cat-card cat-3 rv rv-3">
             <div className="cat-bg" />
             <div className="cat-flare" />
             <div className="cat-content">
@@ -153,12 +158,12 @@ export function HomePage({ onAddToCart }) {
                 <span>Explore</span> →
               </div>
             </div>
-          </div>
+          </Link>
         </div>
       </section>
 
       {/* Philosophy/Brand Story Section */}
-      <section className="philo">
+      <section id="philosophy" className="philo">
         <div className="rv rv-1">
           <p className="philo-eye">Our Philosophy</p>
           <h2 className="philo-quote">
