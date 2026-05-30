@@ -19,6 +19,7 @@ export function ProductDetailPage() {
   const [quantity, setQuantity] = useState(1);
   const [mainImageIndex, setMainImageIndex] = useState(0);
   const [wishlisted, setWishlisted] = useState(false);
+  const [ratingSummary, setRatingSummary] = useState(null);
   const { addItem } = useCart();
 
   useEffect(() => {
@@ -31,10 +32,13 @@ export function ProductDetailPage() {
       const data = await API.products.get(id);
       setProduct(data);
 
+      // Real rating summary (replaces the old hardcoded "4.5 / 24 reviews")
+      API.reviews.summary(id).then(setRatingSummary).catch(() => setRatingSummary(null));
+
       if (data.category) {
         try {
           const related = await API.products.byCategory(data.category);
-          // BUG 18 FIX: Number(id) — useParams gives string, p.id is number
+          // BUG 18 FIX: Number(id) â€” useParams gives string, p.id is number
           setRelatedProducts(related.products?.filter(p => p.id !== Number(id)).slice(0, 4) || []);
         } catch (e) {
           console.error('Error loading related products:', e);
@@ -51,7 +55,8 @@ export function ProductDetailPage() {
   const handleWishlist = async () => {
     try {
       const res = await API.wishlist.toggleItem(product.id);
-      setWishlisted(res.is_wishlisted ?? !wishlisted);
+      // Backend returns { action: "added" | "removed" }
+      setWishlisted(res.action === 'added');
     } catch {
       setWishlisted(prev => !prev);
     }
@@ -85,7 +90,6 @@ export function ProductDetailPage() {
     );
   }
 
-  const rating = 4.5;
   const discount = product.original_price && product.price < product.original_price
     ? Math.round(((product.original_price - product.price) / product.original_price) * 100)
     : null;
@@ -123,19 +127,30 @@ export function ProductDetailPage() {
             <h1 className="product-detail-title">{product.name}</h1>
             <p className="product-detail-sku">SKU: {product.sku || 'N/A'}</p>
 
-            <div style={{ marginTop: '12px', display: 'flex', alignItems: 'center', gap: '12px' }}>
-              <div style={{ color: 'var(--gold)' }}>★★★★☆ ({rating})</div>
-              {/* BUG 17 FIX: was style={{ fontSize: '12px\', opacity: 0.6' }} — broken escape */}
-              <span style={{ fontSize: '12px', opacity: 0.6 }}>24 reviews</span>
-            </div>
+            {ratingSummary && ratingSummary.review_count > 0 ? (
+              <div style={{ marginTop: '12px', display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <div style={{ color: 'var(--gold)' }}>
+                  {'â˜…'.repeat(Math.round(ratingSummary.average_rating))}
+                  {'â˜†'.repeat(5 - Math.round(ratingSummary.average_rating))}
+                  {' '}({ratingSummary.average_rating.toFixed(1)})
+                </div>
+                <span style={{ fontSize: '12px', opacity: 0.6 }}>
+                  {ratingSummary.review_count} review{ratingSummary.review_count !== 1 ? 's' : ''}
+                </span>
+              </div>
+            ) : (
+              <div style={{ marginTop: '12px', fontSize: '12px', opacity: 0.6 }}>
+                No reviews yet
+              </div>
+            )}
           </div>
 
           {/* Pricing */}
           <div className="product-pricing">
             {/* BUG 27 FIX: parseFloat handles Decimal-as-string from backend */}
-            <span className="product-current-price">₹{parseFloat(product.price || 0).toLocaleString('en-IN')}</span>
+            <span className="product-current-price">â‚¹{parseFloat(product.price || 0).toLocaleString('en-IN')}</span>
             {product.original_price && (
-              <span className="product-original-price">₹{parseFloat(product.original_price).toLocaleString('en-IN')}</span>
+              <span className="product-original-price">â‚¹{parseFloat(product.original_price).toLocaleString('en-IN')}</span>
             )}
             {discount && <Badge variant="error" size="sm">{discount}% OFF</Badge>}
           </div>
@@ -174,7 +189,7 @@ export function ProductDetailPage() {
           <div className="product-quantity">
             <span className="quantity-label">Quantity</span>
             <div className="quantity-control">
-              <button className="qty-btn" onClick={() => setQuantity(Math.max(1, quantity - 1))}>−</button>
+              <button className="qty-btn" onClick={() => setQuantity(Math.max(1, quantity - 1))}>âˆ’</button>
               <input
                 type="number"
                 className="qty-input"
@@ -190,7 +205,7 @@ export function ProductDetailPage() {
           <div className="product-actions">
             <Button variant="primary" onClick={handleAddToCart}>Add to Cart</Button>
             <Button variant="outline" onClick={handleWishlist}>
-              {wishlisted ? '♥ Wishlisted' : '♡ Wishlist'}
+              {wishlisted ? 'â™¥ Wishlisted' : 'â™¡ Wishlist'}
             </Button>
           </div>
 

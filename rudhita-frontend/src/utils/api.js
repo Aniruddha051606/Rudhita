@@ -13,10 +13,40 @@ export class APIError extends Error {
 
 /**
  * Central fetch wrapper.
- * – Attaches Bearer token automatically.
- * – Redirects to /auth on 401.
- * – Throws APIError on non-2xx.
+ * â€“ Attaches Bearer token automatically.
+ * â€“ Redirects to /auth on 401.
+ * â€“ Throws APIError on non-2xx.
  */
+// Single-flight refresh: concurrent 401s share one /auth/refresh call so we
+// never fire multiple refreshes (which would invalidate each other via rotation).
+let _refreshPromise = null;
+
+async function tryRefresh() {
+  const rt = localStorage.getItem("rudhita_refresh_token");
+  if (!rt) return false;
+  if (!_refreshPromise) {
+    _refreshPromise = fetch(`${BASE_URL}/auth/refresh`, {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify({ refresh_token: rt }),
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (d && d.access_token) {
+          localStorage.setItem("rudhita_token", d.access_token);
+          if (d.refresh_token) {
+            localStorage.setItem("rudhita_refresh_token", d.refresh_token);
+          }
+          return true;
+        }
+        return false;
+      })
+      .catch(() => false)
+      .finally(() => { _refreshPromise = null; });
+  }
+  return _refreshPromise;
+}
+
 export const fetchAPI = async (endpoint, options = {}) => {
   const token = localStorage.getItem("rudhita_token");
 
@@ -34,15 +64,20 @@ export const fetchAPI = async (endpoint, options = {}) => {
     const data = text ? JSON.parse(text) : {};
 
     if (!response.ok) {
-      if (response.status === 401) {
-        console.error('[fetchAPI] Auth validation failed (401) on', endpoint,
-          '— clearing session tokens');
+      if (response.status === 401 && !options._retry) {
+        // Access token likely expired â€” try a one-time silent refresh, then
+        // replay the original request once. Only log out if refresh fails.
+        const refreshed = await tryRefresh();
+        if (refreshed) {
+          return fetchAPI(endpoint, { ...options, _retry: true });
+        }
+        console.error('[fetchAPI] Auth refresh failed (401) on', endpoint,
+          'â€” clearing session tokens');
         localStorage.removeItem("rudhita_token");
         localStorage.removeItem("rudhita_refresh_token");
-        // Do NOT hard-redirect here. A hard window.location.href races with
-        // React Router's render cycle: ProtectedRoute reads hasToken from
-        // localStorage, sees it cleared, and navigates to /auth via React
-        // Router on its next render — no full page reload, no loop.
+        // Do NOT hard-redirect here. ProtectedRoute reads hasToken from
+        // localStorage, sees it cleared, and navigates to /auth on its next
+        // render â€” no full page reload, no loop.
       }
       throw new APIError(
         data.detail || data.message || "Something went wrong",
@@ -57,13 +92,13 @@ export const fetchAPI = async (endpoint, options = {}) => {
   }
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // ALL ENDPOINTS
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export const API = {
 
-  // ── Auth ──────────────────────────────────────────────────────────────────
+  // â”€â”€ Auth â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   auth: {
     register: (data) =>
       fetchAPI("/auth/register", { method: "POST", body: JSON.stringify(data) }),
@@ -111,7 +146,7 @@ export const API = {
       }),
   },
 
-  // ── Products ───────────────────────────────────────────────────────────────
+  // â”€â”€ Products â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   products: {
     list:       (params = {}) => {
       const qs = new URLSearchParams(params).toString();
@@ -123,7 +158,7 @@ export const API = {
     byCategory: (category) => fetchAPI(`/products/category/${encodeURIComponent(category)}`),
   },
 
-  // ── Cart ───────────────────────────────────────────────────────────────────
+  // â”€â”€ Cart â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   cart: {
     get:    ()                       => fetchAPI("/cart/"),
     add:    (productId, quantity = 1) =>
@@ -140,7 +175,7 @@ export const API = {
     clear:  ()       => fetchAPI("/cart/clear",             { method: "DELETE" }),
   },
 
-  // ── Orders ─────────────────────────────────────────────────────────────────
+  // â”€â”€ Orders â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   orders: {
     list:   ()      => fetchAPI("/orders/"),
     get:    (id)    => fetchAPI(`/orders/${id}`),
@@ -155,7 +190,7 @@ export const API = {
     cancel: (id) => fetchAPI(`/orders/${id}/cancel`, { method: "POST" }),
   },
 
-  // ── User ───────────────────────────────────────────────────────────────────
+  // â”€â”€ User â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   user: {
     getProfile:    ()          => fetchAPI("/user/profile"),
     updateProfile: (data)      =>
@@ -169,7 +204,7 @@ export const API = {
       fetchAPI(`/user/addresses/${id}`, { method: "DELETE" }),
   },
 
-  // ── Reviews (Phase 3) ─────────────────────────────────────────────────────
+  // â”€â”€ Reviews (Phase 3) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   reviews: {
     /** GET /products/{id}/reviews */
     getForProduct: (productId) => fetchAPI(`/products/${productId}/reviews`),
@@ -184,7 +219,7 @@ export const API = {
       }),
   },
 
-  // ── Wishlist (Phase 3) ────────────────────────────────────────────────────
+  // â”€â”€ Wishlist (Phase 3) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   wishlist: {
     getItems:   ()          => fetchAPI("/wishlist"),
     toggleItem: (productId) =>
@@ -194,7 +229,7 @@ export const API = {
       }),
   },
 
-  // ── Admin ──────────────────────────────────────────────────────────────────
+  // â”€â”€ Admin â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   admin: {
     dashboard: () => fetchAPI("/admin/dashboard"),
     stats:     () => fetchAPI("/admin/stats"),
@@ -283,9 +318,9 @@ export const API = {
   },
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // AUTH TOKEN UTILITIES
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export const isAuthenticated = () => !!localStorage.getItem("rudhita_token");
 export const getAuthToken    = () => localStorage.getItem("rudhita_token");
@@ -293,7 +328,7 @@ export const getAuthToken    = () => localStorage.getItem("rudhita_token");
 export const setAuthTokens = (data) => {
   if (!data) return;
 
-  // Extract access token — handles { access_token }, { token }, or a raw string
+  // Extract access token â€” handles { access_token }, { token }, or a raw string
   const accessToken = data.access_token || data.token
     || (typeof data === 'string' ? data : null);
 
@@ -304,7 +339,7 @@ export const setAuthTokens = (data) => {
     localStorage.removeItem('rudhita_token');
   }
 
-  // Extract refresh token — needed by API.auth.logout() to blocklist on backend
+  // Extract refresh token â€” needed by API.auth.logout() to blocklist on backend
   const refreshToken = data.refresh_token || data.refresh || null;
   if (refreshToken) {
     localStorage.setItem('rudhita_refresh_token', refreshToken);

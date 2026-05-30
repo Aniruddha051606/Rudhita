@@ -7,6 +7,27 @@ import { Loader } from '../components/Loader';
 import { API } from '../utils/api';
 import './Pages.css';
 
+// Ensures the Razorpay checkout script is loaded before we call new window.Razorpay().
+// The script tag is not in index.html, so without this the modal throws
+// "window.Razorpay is not a function".
+const RAZORPAY_SRC = 'https://checkout.razorpay.com/v1/checkout.js';
+function loadRazorpay() {
+  return new Promise((resolve, reject) => {
+    if (window.Razorpay) return resolve(true);
+    const existing = document.querySelector(`script[src="${RAZORPAY_SRC}"]`);
+    if (existing) {
+      existing.addEventListener('load', () => resolve(true));
+      existing.addEventListener('error', () => reject(new Error('Failed to load Razorpay.')));
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = RAZORPAY_SRC;
+    script.onload = () => resolve(true);
+    script.onerror = () => reject(new Error('Failed to load Razorpay. Check your connection.'));
+    document.body.appendChild(script);
+  });
+}
+
 export function CheckoutPage() {
   const navigate = useNavigate();
 
@@ -22,7 +43,7 @@ export function CheckoutPage() {
   const [shipping, setShipping]               = useState('standard');
   const [paymentMethod, setPaymentMethod]     = useState('razorpay');
 
-  // â”€â”€ Bootstrap â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Bootstrap Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   useEffect(() => {
     loadCheckoutData();
   }, []);
@@ -50,7 +71,7 @@ export function CheckoutPage() {
           });
         }
       } catch (_) {
-        // Saved addresses are optional â€” silently ignore failures
+        // Saved addresses are optional Ã¢â‚¬â€ silently ignore failures
       }
     } catch (error) {
       console.error('Error loading checkout data:', error);
@@ -60,7 +81,7 @@ export function CheckoutPage() {
     }
   };
 
-  // â”€â”€ Address helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Address helpers Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   const handleAddressChange = (e) => {
     const { name, value } = e.target;
     setAddress(prev => ({ ...prev, [name]: value }));
@@ -74,14 +95,14 @@ export function CheckoutPage() {
       return false;
     }
     if (!/^\d{6}$/.test(address.pincode)) {
-      setMessage('Invalid pincode â€” must be exactly 6 digits');
+      setMessage('Invalid pincode Ã¢â‚¬â€ must be exactly 6 digits');
       return false;
     }
     return true;
   };
 
-  // â”€â”€ Order totals â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  // FIX: item.product?.price â€” backend nests product data under .product
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Order totals Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+  // FIX: item.product?.price Ã¢â‚¬â€ backend nests product data under .product
   const subtotal = cartItems.reduce(
     (sum, item) => sum + (parseFloat(item.product?.price || 0) * item.quantity),
     0,
@@ -90,7 +111,7 @@ export function CheckoutPage() {
   const tax          = subtotal * 0.18;
   const total        = subtotal + shippingCost + tax;
 
-  // â”€â”€ Place order â†’ Razorpay â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Place order Ã¢â€ â€™ Razorpay Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   // FIX: was a fake bypass that called navigate() immediately without any payment.
   // Now the full Razorpay modal flow:
   //   1. Create order on our backend (returns key_id + razorpay_order_id + amount)
@@ -113,7 +134,7 @@ export function CheckoutPage() {
 
       // Step 2: configure and open the Razorpay modal
       // NOTE: orderData.amount is returned in RUPEES from our backend.
-      //       Razorpay expects the amount in PAISE, so we multiply Ã— 100.
+      //       Razorpay expects the amount in PAISE, so we multiply Ãƒâ€” 100.
       const options = {
         key:       orderData.key_id,
         amount:    Math.round(parseFloat(orderData.amount) * 100), // paise (integer)
@@ -122,7 +143,7 @@ export function CheckoutPage() {
         name:      'Rudhita',
         description: 'Order Payment',
 
-        // Step 3: payment success handler â€” verify BEFORE navigating
+        // Step 3: payment success handler Ã¢â‚¬â€ verify BEFORE navigating
         handler: async (razorpayResponse) => {
           try {
             await API.orders.confirmPayment(orderData.order_id, {
@@ -149,6 +170,7 @@ export function CheckoutPage() {
         },
       };
 
+      await loadRazorpay();
       const rzp = new window.Razorpay(options);
       rzp.open();
 
@@ -158,7 +180,7 @@ export function CheckoutPage() {
     }
   };
 
-  // â”€â”€ Early returns â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Early returns Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   if (isLoading) return <Loader />;
 
   if (cartItems.length === 0) {
@@ -173,7 +195,7 @@ export function CheckoutPage() {
     );
   }
 
-  // â”€â”€ Render â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Render Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   return (
     <div style={{ maxWidth: '1200px', margin: '0 auto', padding: 'var(--spacing-2xl)' }}>
       <h1 style={{ fontSize: '32px', fontFamily: 'var(--font-serif)', marginBottom: '32px' }}>
@@ -224,10 +246,10 @@ export function CheckoutPage() {
       {/* checkout-grid defined in Pages.css with responsive mobile override */}
       <div className="checkout-grid">
 
-        {/* â”€â”€ Main content â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+        {/* Ã¢â€â‚¬Ã¢â€â‚¬ Main content Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ */}
         <div>
 
-          {/* Step 1 â€” Shipping address */}
+          {/* Step 1 Ã¢â‚¬â€ Shipping address */}
           {step === 1 && (
             <div>
               <h2 style={{ fontSize: '20px', marginBottom: '20px' }}>Shipping Address</h2>
@@ -249,7 +271,7 @@ export function CheckoutPage() {
                     <div>
                       <div style={{ fontWeight: '600' }}>Standard Delivery</div>
                       <div style={{ fontSize: '13px', opacity: '0.6' }}>
-                        5-7 business days Â· {shippingCost > 0 ? `â‚¹${shippingCost}` : 'FREE'}
+                        5-7 business days Ã‚Â· {shippingCost > 0 ? `Ã¢â€šÂ¹${shippingCost}` : 'FREE'}
                       </div>
                     </div>
                   </label>
@@ -257,7 +279,7 @@ export function CheckoutPage() {
                     <input type="radio" name="shipping" value="express" checked={shipping === 'express'} onChange={e => setShipping(e.target.value)} />
                     <div>
                       <div style={{ fontWeight: '600' }}>Express Delivery</div>
-                      <div style={{ fontSize: '13px', opacity: '0.6' }}>2-3 business days Â· â‚¹200</div>
+                      <div style={{ fontSize: '13px', opacity: '0.6' }}>2-3 business days Ã‚Â· Ã¢â€šÂ¹200</div>
                     </div>
                   </label>
                 </div>
@@ -265,7 +287,7 @@ export function CheckoutPage() {
             </div>
           )}
 
-          {/* Step 2 â€” Order review */}
+          {/* Step 2 Ã¢â‚¬â€ Order review */}
           {step === 2 && (
             <div>
               <h2 style={{ fontSize: '20px', marginBottom: '20px' }}>Order Review</h2>
@@ -297,7 +319,7 @@ export function CheckoutPage() {
                   Order Items
                 </h3>
                 {cartItems.map((item) => (
-                  // FIX: key must be item.id (CartItem ID) â€” item.product_id is
+                  // FIX: key must be item.id (CartItem ID) Ã¢â‚¬â€ item.product_id is
                   // not a top-level property on the CartItemResponse object.
                   <div
                     key={item.id}
@@ -321,14 +343,14 @@ export function CheckoutPage() {
                       <p style={{ margin: '4px 0', fontSize: '13px', opacity: '0.6' }}>Qty: {item.quantity}</p>
                       {item.product?.color && (
                         <p style={{ margin: '2px 0', fontSize: '12px', opacity: '0.5' }}>
-                          {item.product.color}{item.product?.size ? ` Â· ${item.product.size}` : ''}
+                          {item.product.color}{item.product?.size ? ` Ã‚Â· ${item.product.size}` : ''}
                         </p>
                       )}
                     </div>
                     <div style={{ textAlign: 'right' }}>
-                      {/* FIX: item.product?.price (nested) â€” was item.price which is undefined */}
+                      {/* FIX: item.product?.price (nested) Ã¢â‚¬â€ was item.price which is undefined */}
                       <p style={{ margin: 0, fontWeight: '600' }}>
-                        â‚¹{(parseFloat(item.product?.price || 0) * item.quantity).toLocaleString('en-IN')}
+                        Ã¢â€šÂ¹{(parseFloat(item.product?.price || 0) * item.quantity).toLocaleString('en-IN')}
                       </p>
                     </div>
                   </div>
@@ -337,7 +359,7 @@ export function CheckoutPage() {
             </div>
           )}
 
-          {/* Step 3 â€” Payment */}
+          {/* Step 3 Ã¢â‚¬â€ Payment */}
           {step === 3 && (
             <div>
               <h2 style={{ fontSize: '20px', marginBottom: '20px' }}>Payment Method</h2>
@@ -372,7 +394,7 @@ export function CheckoutPage() {
           <div style={{ display: 'flex', gap: '12px', marginTop: '32px' }}>
             {step > 1 && (
               <Button variant="outline" onClick={() => setStep(step - 1)} disabled={isProcessing}>
-                â† Previous Step
+                Ã¢â€ Â Previous Step
               </Button>
             )}
             {step < 3 && (
@@ -384,18 +406,18 @@ export function CheckoutPage() {
                 }}
                 disabled={isProcessing}
               >
-                Next Step â†’
+                Next Step Ã¢â€ â€™
               </Button>
             )}
             {step === 3 && (
               <Button variant="primary" onClick={handlePlaceOrder} disabled={isProcessing}>
-                {isProcessing ? 'Processingâ€¦' : `Pay â‚¹${total.toLocaleString('en-IN')}`}
+                {isProcessing ? 'ProcessingÃ¢â‚¬Â¦' : `Pay Ã¢â€šÂ¹${total.toLocaleString('en-IN')}`}
               </Button>
             )}
           </div>
         </div>
 
-        {/* â”€â”€ Order summary sidebar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+        {/* Ã¢â€â‚¬Ã¢â€â‚¬ Order summary sidebar Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ */}
         <div style={{ position: 'sticky', top: '100px', height: 'fit-content' }}>
           <div style={{
             padding: 'var(--spacing-lg)', background: 'var(--cream-d)',
@@ -405,11 +427,11 @@ export function CheckoutPage() {
 
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '14px', marginBottom: '12px' }}>
               <span>Subtotal</span>
-              <span>â‚¹{subtotal.toLocaleString('en-IN')}</span>
+              <span>Ã¢â€šÂ¹{subtotal.toLocaleString('en-IN')}</span>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '14px', marginBottom: '12px' }}>
               <span>Shipping</span>
-              <span>{shippingCost === 0 ? 'FREE' : `â‚¹${shippingCost}`}</span>
+              <span>{shippingCost === 0 ? 'FREE' : `Ã¢â€šÂ¹${shippingCost}`}</span>
             </div>
             <div style={{
               display: 'flex', justifyContent: 'space-between', fontSize: '14px',
@@ -417,11 +439,11 @@ export function CheckoutPage() {
               borderBottom: '1px solid rgba(24,16,12,0.1)',
             }}>
               <span>Tax (18%)</span>
-              <span>â‚¹{tax.toLocaleString('en-IN')}</span>
+              <span>Ã¢â€šÂ¹{tax.toLocaleString('en-IN')}</span>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '16px', fontWeight: '600' }}>
               <span>Total</span>
-              <span>â‚¹{total.toLocaleString('en-IN')}</span>
+              <span>Ã¢â€šÂ¹{total.toLocaleString('en-IN')}</span>
             </div>
           </div>
         </div>
