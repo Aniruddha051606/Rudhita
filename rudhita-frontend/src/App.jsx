@@ -53,7 +53,7 @@ function AppLayout({ children, onLogout, onOpenAuth, onOpenCart, cartCount }) {
       <footer>
         <div className="foot-inner">
           <div className="foot-bottom" style={{ borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: '20px' }}>
-            <p className="foot-copy">Â© 2026 Rudhita. All rights reserved.</p>
+            <p className="foot-copy">Ã‚Â© 2026 Rudhita. All rights reserved.</p>
             <div className="foot-legal">
               <a href="#">Privacy</a>
               <a href="#">Terms</a>
@@ -67,10 +67,6 @@ function AppLayout({ children, onLogout, onOpenAuth, onOpenCart, cartCount }) {
 
 function App() {
   const [isAuthOpen, setIsAuthOpen] = useState(false);
-  // useState with lazy initializer: reads localStorage exactly once on mount.
-  // A plain `isAuthenticated()` call re-runs on every render and can go stale
-  // if the token is written concurrently (e.g. during the OAuth callback).
-  const [isLoggedIn] = useState(isAuthenticated);
   const { count: cartCount, openDrawer, addItem } = useCart();
 
   // BUG 5 FIX: clear both tokens, call backend to blocklist JTI
@@ -81,7 +77,10 @@ function App() {
   };
 
   const handleAddToCart = (productId) => {
-    if (!isLoggedIn) {
+    // Evaluate auth at the moment of the click, NOT from a value captured at
+    // mount. After an in-modal login (which writes tokens to localStorage),
+    // isAuthenticated() now reflects the live state on the very next click.
+    if (!isAuthenticated()) {
       setIsAuthOpen(true);
       return;
     }

@@ -2,14 +2,15 @@
 import React, { useState } from 'react';
 import { Input } from '../components/Input';
 import { Button } from '../components/Button';
+import GoogleLoginButton from '../components/GoogleLoginButton';
 
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // FIX 1 (BUILD CRASH):
 //   BEFORE: import { API, setAuthToken }  from '../utils/api';
-//           ↑ "setAuthToken" does NOT exist → Vite throws [MISSING_EXPORT] → build fails
+//           â†‘ "setAuthToken" does NOT exist â†’ Vite throws [MISSING_EXPORT] â†’ build fails
 //   AFTER:  import { API, setAuthTokens } from '../utils/api';
-//           ↑ "setAuthTokens" is the actual exported name (plural, stores both tokens)
-// ─────────────────────────────────────────────────────────────────────────────
+//           â†‘ "setAuthTokens" is the actual exported name (plural, stores both tokens)
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 import { API, setAuthTokens } from '../utils/api';
 import './AuthPage.css';
 
@@ -40,7 +41,7 @@ export function AuthPage() {
     }
   }, [otpTimer]);
 
-  // ── Handlers ──────────────────────────────────────────────────────────────
+  // â”€â”€ Handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   const handleLoginChange = (e) => {
     const { name, value } = e.target;
@@ -64,7 +65,19 @@ export function AuthPage() {
     setMessage('');
   };
 
-  // ── Login ─────────────────────────────────────────────────────────────────
+  // â”€â”€ Login â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+  // Google sign-in: GoogleLoginButton already POSTs the id_token to the backend
+  // and stores the returned tokens via setAuthTokens(). We only need to do a
+  // HARD redirect so the whole React tree remounts and reads the fresh tokens
+  // from localStorage (App, Header, CartContext all re-init).
+  const handleGoogleSuccess = () => {
+    window.location.href = '/';
+  };
+
+  const handleGoogleError = (msg) => {
+    setMessage(msg || 'Google sign-in failed. Please try again.');
+  };
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -80,15 +93,15 @@ export function AuthPage() {
         password: loginForm.password,
       });
 
-      // ───────────────────────────────────────────────────────────────────────
+      // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       // FIX 2 (SILENT LOGIN FAILURE):
       //   BEFORE: if (response.token) { setAuthToken(response.token); }
-      //           ↑ backend returns { access_token, refresh_token } — no "token" key
-      //           ↑ response.token is always undefined → user never gets logged in
+      //           â†‘ backend returns { access_token, refresh_token } â€” no "token" key
+      //           â†‘ response.token is always undefined â†’ user never gets logged in
       //   AFTER:  setAuthTokens({ access_token, refresh_token })
-      //           ↑ reads the actual field names the backend sends
-      //           ↑ stores both tokens so refresh flow works
-      // ───────────────────────────────────────────────────────────────────────
+      //           â†‘ reads the actual field names the backend sends
+      //           â†‘ stores both tokens so refresh flow works
+      // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       if (response.access_token) {
         setAuthTokens({
           access_token:  response.access_token,
@@ -107,7 +120,7 @@ export function AuthPage() {
     }
   };
 
-  // ── Register ──────────────────────────────────────────────────────────────
+  // â”€â”€ Register â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   const handleRegister = async (e) => {
     e.preventDefault();
@@ -146,7 +159,7 @@ export function AuthPage() {
     }
   };
 
-  // ── OTP Verification ──────────────────────────────────────────────────────
+  // â”€â”€ OTP Verification â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   const handleOTPVerify = async (e) => {
     e.preventDefault();
@@ -160,18 +173,18 @@ export function AuthPage() {
     try {
       await API.auth.verifyOTP({ email: otpForm.email, otp: otpForm.otp });
 
-      // ─────────────────────────────────────────────────────────────────────
+      // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       // FIX 3 (OTP VERIFY ALWAYS SHOWS "FAILED"):
       //   BEFORE: if (response.token) { setAuthToken(response.token); navigate('/'); }
       //           else { setMessage('OTP verification failed. Please try again.'); }
-      //           ↑ verifyOTP returns { status: "success", message: "..." } — no token
-      //           ↑ response.token is always undefined → always hits the else branch
-      //           ↑ user sees "OTP verification failed" even when verification WORKED
+      //           â†‘ verifyOTP returns { status: "success", message: "..." } â€” no token
+      //           â†‘ response.token is always undefined â†’ always hits the else branch
+      //           â†‘ user sees "OTP verification failed" even when verification WORKED
       //
-      //   AFTER:  show success message → redirect to login tab after 1.5s
+      //   AFTER:  show success message â†’ redirect to login tab after 1.5s
       //           verifyOTP just marks the account as verified; the user then logs in.
       //           The backend does NOT issue a token at the verification step.
-      // ─────────────────────────────────────────────────────────────────────
+      // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       setMessage('Account verified! Please sign in.');
       setShowOTP(false);
       setOtpForm({ otp: '', email: '' });
@@ -193,7 +206,7 @@ export function AuthPage() {
     }
   };
 
-  // ── Resend OTP ────────────────────────────────────────────────────────────
+  // â”€â”€ Resend OTP â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   const handleResendOTP = async () => {
     setIsLoading(true);
@@ -208,7 +221,7 @@ export function AuthPage() {
     }
   };
 
-  // ── Render ────────────────────────────────────────────────────────────────
+  // â”€â”€ Render â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   return (
     <div className="auth-page">
@@ -252,7 +265,7 @@ export function AuthPage() {
                   label="Password"
                   type="password"
                   name="password"
-                  placeholder="••••••••"
+                  placeholder="â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢"
                   value={loginForm.password}
                   onChange={handleLoginChange}
                   required
@@ -273,6 +286,19 @@ export function AuthPage() {
                     Forgot password?
                   </a>
                 </p>
+
+                {/* â”€â”€ Google Sign-In â”€â”€ */}
+                <div className="auth-divider" style={{
+                  display: 'flex', alignItems: 'center', gap: '12px',
+                  margin: '20px 0', color: 'var(--terra)', opacity: 0.6, fontSize: '12px',
+                }}>
+                  <span style={{ flex: 1, height: 1, background: 'currentColor', opacity: 0.3 }} />
+                  OR
+                  <span style={{ flex: 1, height: 1, background: 'currentColor', opacity: 0.3 }} />
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'center' }}>
+                  <GoogleLoginButton onSuccess={handleGoogleSuccess} onError={handleGoogleError} />
+                </div>
               </form>
             )}
 
@@ -310,7 +336,7 @@ export function AuthPage() {
                   label="Password"
                   type="password"
                   name="password"
-                  placeholder="••••••••"
+                  placeholder="â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢"
                   value={registerForm.password}
                   onChange={handleRegisterChange}
                   required
@@ -319,7 +345,7 @@ export function AuthPage() {
                   label="Confirm Password"
                   type="password"
                   name="confirmPassword"
-                  placeholder="••••••••"
+                  placeholder="â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢"
                   value={registerForm.confirmPassword}
                   onChange={handleRegisterChange}
                   required
@@ -335,6 +361,19 @@ export function AuthPage() {
                 <Button variant="primary" className="auth-submit" disabled={isLoading}>
                   {isLoading ? 'Creating Account...' : 'Create Account'}
                 </Button>
+
+                {/* â”€â”€ Google Sign-In â”€â”€ */}
+                <div className="auth-divider" style={{
+                  display: 'flex', alignItems: 'center', gap: '12px',
+                  margin: '20px 0', color: 'var(--terra)', opacity: 0.6, fontSize: '12px',
+                }}>
+                  <span style={{ flex: 1, height: 1, background: 'currentColor', opacity: 0.3 }} />
+                  OR
+                  <span style={{ flex: 1, height: 1, background: 'currentColor', opacity: 0.3 }} />
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'center' }}>
+                  <GoogleLoginButton onSuccess={handleGoogleSuccess} onError={handleGoogleError} />
+                </div>
               </form>
             )}
           </>
@@ -396,7 +435,7 @@ export function AuthPage() {
               }}
               className="back-btn"
             >
-              ← Back to Registration
+              â† Back to Registration
             </button>
           </form>
         )}
