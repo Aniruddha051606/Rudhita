@@ -1,248 +1,157 @@
 // src/components/AuthModal.jsx
 import React, { useState, useEffect } from 'react';
-import { API } from '../utils/api';
-import { useAuth } from '../context/AuthContext';
-import GoogleLoginButton from './GoogleLoginButton';
+import { X } from 'lucide-react';
+import { API } from '@/api/client';
+import { useAuth } from '@/context/AuthContext';
+import { Button } from '@/components/ui/Button';
+import { Input } from '@/components/ui/Input';
+import GoogleLoginButton from '@/components/GoogleLoginButton';
+
+const Divider = () => (
+  <div className="flex items-center gap-3 my-5">
+    <span className="flex-1 h-0.5 bg-line" />
+    <span className="eyebrow">or</span>
+    <span className="flex-1 h-0.5 bg-line" />
+  </div>
+);
 
 export default function AuthModal({ isOpen, onClose }) {
   const { login } = useAuth();
-
-  // Modes: 'login' | 'register' | 'otp'
-  const [mode, setMode] = useState('login');
-
-  // Form state
-  const [email,    setEmail]    = useState('');
-  const [password, setPassword] = useState('');
-  const [name,     setName]     = useState('');
-  const [phone,    setPhone]    = useState('');
-  const [otp,      setOtp]      = useState('');
-
-  // Messaging + busy state
-  const [error,   setError]   = useState('');
+  const [mode, setMode] = useState('login');     // login | register | otp
+  const [form, setForm] = useState({ name: '', email: '', phone: '', password: '' });
+  const [otp, setOtp]   = useState('');
+  const [error, setError]     = useState('');
   const [success, setSuccess] = useState('');
-  const [busy,    setBusy]    = useState(false);
+  const [busy, setBusy]       = useState(false);
 
-  // Clear messages whenever the modal opens / closes
+  useEffect(() => { if (isOpen) { setError(''); setSuccess(''); } }, [isOpen]);
+
+  // Lock body scroll while open
   useEffect(() => {
-    if (isOpen) {
-      setError('');
-      setSuccess('');
-    }
+    if (isOpen) { document.body.style.overflow = 'hidden'; }
+    return () => { document.body.style.overflow = ''; };
   }, [isOpen]);
 
-  // Close when clicking the dark backdrop
-  const handleOverlayClick = (e) => {
-    if (e.target.classList.contains('overlay')) onClose();
-  };
+  if (!isOpen) return null;
 
-  // Shared: take tokens from a successful login (password OR Google), hand them
-  // to the AuthContext (which stores them + updates state instantly), then close.
-  const finishLogin = async (tokens) => {
-    await login(tokens);   // updates global state — header/cart re-render, no reload
-    onClose();
-  };
+  const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
 
-  // ── LOGIN ──────────────────────────────────────────────────────────────────
-  const handleLogin = async () => {
-    setError(''); setSuccess('');
-    if (!email || !password) {
-      setError('Please enter your email and password.');
-      return;
-    }
+  const finishLogin = (tokens) => { login(tokens); onClose(); };
+
+  const doLogin = async () => {
+    setError('');
+    if (!form.email || !form.password) { setError('Please enter your email and password.'); return; }
     setBusy(true);
     try {
-      const data = await API.auth.login({ email, password });
-      await finishLogin(data);
-    } catch (err) {
-      setError(err.message || 'Sign in failed. Check your credentials.');
-    } finally {
-      setBusy(false);
-    }
+      const data = await API.auth.login({ email: form.email, password: form.password });
+      finishLogin(data);
+    } catch (err) { setError(err.message || 'Sign in failed. Check your credentials.'); }
+    finally { setBusy(false); }
   };
 
-  // ── REGISTER ─────────────────────────────────────────────────────────────────
-  const handleRegister = async () => {
-    setError(''); setSuccess('');
-    if (!name || !email || !password) {
-      setError('Please fill in your name, email, and password.');
-      return;
-    }
+  const doRegister = async () => {
+    setError('');
+    if (!form.name || !form.email || !form.password) { setError('Please fill in name, email, and password.'); return; }
     setBusy(true);
     try {
-      await API.auth.register({ name, email, password, phone: phone || null });
+      await API.auth.register({ name: form.name, email: form.email, password: form.password, phone: form.phone || null });
       setSuccess('Verification code sent! Check your email.');
       setMode('otp');
-    } catch (err) {
-      setError(err.message || 'Registration failed.');
-    } finally {
-      setBusy(false);
-    }
+    } catch (err) { setError(err.message || 'Registration failed.'); }
+    finally { setBusy(false); }
   };
 
-  // ── OTP VERIFY ───────────────────────────────────────────────────────────────
-  const handleOTP = async () => {
-    setError(''); setSuccess('');
+  const doOTP = async () => {
+    setError('');
     setBusy(true);
     try {
-      await API.auth.verifyOTP({ email, otp });
+      await API.auth.verifyOTP({ email: form.email, otp });
       setSuccess('Account verified! You can now sign in.');
       setMode('login');
-    } catch (err) {
-      setError(err.message || 'Verification failed. Invalid code.');
-    } finally {
-      setBusy(false);
-    }
+    } catch (err) { setError(err.message || 'Verification failed. Invalid code.'); }
+    finally { setBusy(false); }
   };
 
-  const onGoogleSuccess = async (tokens) => {
-    try {
-      await finishLogin(tokens);
-    } catch (err) {
-      setError(err.message || 'Google sign-in failed.');
-    }
-  };
+  const onGoogle = (tokens) => { try { finishLogin(tokens); } catch (e) { setError(e.message); } };
 
   return (
-    <div className={`overlay ${isOpen ? 'open' : ''}`} onClick={handleOverlayClick}>
-      <div className="modal">
-        <button className="modal-x" onClick={onClose}>×</button>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-ink/60 backdrop-blur-sm animate-scale-in"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="relative w-full max-w-md bg-paper border-2 border-ink shadow-brutalLg">
+        {/* Header strip */}
+        <div className="flex items-center justify-between border-b-2 border-ink px-6 py-4">
+          <span className="font-display text-2xl font-semibold tracking-tight">
+            {mode === 'otp' ? 'Verify' : 'Rudhita'}
+          </span>
+          <button onClick={onClose} className="p-1 hover:text-punch transition-colors" aria-label="Close">
+            <X size={22} strokeWidth={2.5} />
+          </button>
+        </div>
 
-        {/* Hide tabs while in OTP mode */}
-        {mode !== 'otp' && (
-          <div className="modal-tabs">
-            <button
-              className={`mtab ${mode === 'login' ? 'active' : ''}`}
-              onClick={() => setMode('login')}
-            >
-              Sign In
-            </button>
-            <button
-              className={`mtab ${mode === 'register' ? 'active' : ''}`}
-              onClick={() => setMode('register')}
-            >
-              Create Account
-            </button>
-          </div>
-        )}
+        <div className="p-6">
+          {/* Tabs */}
+          {mode !== 'otp' && (
+            <div className="flex gap-1 mb-6 border-2 border-ink p-1">
+              {['login', 'register'].map((m) => (
+                <button
+                  key={m}
+                  onClick={() => { setMode(m); setError(''); }}
+                  className={`flex-1 h-9 font-sans font-semibold text-sm tracking-tight transition-colors ${
+                    mode === m ? 'bg-ink text-paper' : 'text-ink hover:bg-sand'
+                  }`}
+                >
+                  {m === 'login' ? 'Sign In' : 'Create Account'}
+                </button>
+              ))}
+            </div>
+          )}
 
-        {/* Alert messages */}
-        {error   && <div className="form-msg err" style={{ display: 'block', marginBottom: '15px' }}>{error}</div>}
-        {success && <div className="form-msg ok"  style={{ display: 'block', marginBottom: '15px' }}>{success}</div>}
+          {error   && <div className="mb-4 border-2 border-destructive bg-destructive/5 px-3 py-2 font-mono text-xs text-destructive">{error}</div>}
+          {success && <div className="mb-4 border-2 border-success bg-success/5 px-3 py-2 font-mono text-xs text-success">{success}</div>}
 
-        {/* ── LOGIN FORM ── */}
-        {mode === 'login' && (
-          <div className="mform active">
-            <GoogleLoginButton
-              onSuccess={onGoogleSuccess}
-              onError={(msg) => setError(msg || 'Google sign-in failed.')}
-            />
-            <div style={{ display:'flex', alignItems:'center', gap:12, margin:'16px 0' }}>
-              <div style={{ flex:1, height:1, background:'rgba(24,16,12,0.1)' }} />
-              <span style={{ fontSize:11, color:'rgba(24,16,12,0.4)', letterSpacing:'0.1em', textTransform:'uppercase' }}>or</span>
-              <div style={{ flex:1, height:1, background:'rgba(24,16,12,0.1)' }} />
+          {mode === 'login' && (
+            <div className="flex flex-col gap-4">
+              <GoogleLoginButton onSuccess={onGoogle} onError={setError} />
+              <Divider />
+              <Input label="Email" type="email" name="email" value={form.email} onChange={set('email')} placeholder="your@email.com" />
+              <Input label="Password" type="password" name="password" value={form.password} onChange={set('password')}
+                     placeholder="••••••••" onKeyDown={(e) => e.key === 'Enter' && doLogin()} />
+              <Button onClick={doLogin} disabled={busy} size="lg" className="mt-1">
+                {busy ? 'Signing in…' : 'Sign In'}
+              </Button>
             </div>
-            <div className="fg">
-              <label>Email</label>
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="your@email.com"
-              />
-            </div>
-            <div className="fg">
-              <label>Password</label>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
-                onKeyDown={(e) => { if (e.key === 'Enter') handleLogin(); }}
-              />
-            </div>
-            <button className="msubmit" onClick={handleLogin} disabled={busy}>
-              {busy ? 'Signing in…' : 'Sign In'}
-            </button>
-          </div>
-        )}
+          )}
 
-        {/* ── REGISTER FORM ── */}
-        {mode === 'register' && (
-          <div className="mform active">
-            <GoogleLoginButton
-              onSuccess={onGoogleSuccess}
-              onError={(msg) => setError(msg || 'Google sign-in failed.')}
-            />
-            <div style={{ display:'flex', alignItems:'center', gap:12, margin:'16px 0' }}>
-              <div style={{ flex:1, height:1, background:'rgba(24,16,12,0.1)' }} />
-              <span style={{ fontSize:11, color:'rgba(24,16,12,0.4)', letterSpacing:'0.1em', textTransform:'uppercase' }}>or</span>
-              <div style={{ flex:1, height:1, background:'rgba(24,16,12,0.1)' }} />
+          {mode === 'register' && (
+            <div className="flex flex-col gap-4">
+              <GoogleLoginButton onSuccess={onGoogle} onError={setError} />
+              <Divider />
+              <Input label="Full Name" name="name" value={form.name} onChange={set('name')} placeholder="Your name" />
+              <Input label="Email" type="email" name="email" value={form.email} onChange={set('email')} placeholder="your@email.com" />
+              <Input label="Password" type="password" name="password" value={form.password} onChange={set('password')} placeholder="••••••••" />
+              <Input label="Phone (optional)" type="tel" name="phone" value={form.phone} onChange={set('phone')} placeholder="+91 98765 43210" />
+              <Button onClick={doRegister} disabled={busy} size="lg" className="mt-1">
+                {busy ? 'Creating…' : 'Create Account'}
+              </Button>
             </div>
-            <div className="fg">
-              <label>Full Name</label>
-              <input
-                type="text"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="Your name"
-              />
-            </div>
-            <div className="fg">
-              <label>Email</label>
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="your@email.com"
-              />
-            </div>
-            <div className="fg">
-              <label>Password</label>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
-              />
-            </div>
-            <div className="fg">
-              <label>Phone (optional)</label>
-              <input
-                type="tel"
-                value={phone}
-                onChange={(e) => setPhone(e.target.value)}
-                placeholder="+91 98765 43210"
-              />
-            </div>
-            <button className="msubmit" onClick={handleRegister} disabled={busy}>
-              {busy ? 'Creating…' : 'Create Account'}
-            </button>
-          </div>
-        )}
+          )}
 
-        {/* ── OTP FORM ── */}
-        {mode === 'otp' && (
-          <div className="mform active">
-            <p className="otp-hint">
-              We sent a 6-digit code to <strong>{email}</strong>.
-              Enter it below to activate your account.
-            </p>
-            <div className="fg">
-              <label>Verification Code</label>
-              <input
-                type="text"
-                value={otp}
-                onChange={(e) => setOtp(e.target.value)}
-                placeholder="000000"
-                maxLength="6"
-                style={{ fontSize: '22px', letterSpacing: '.35em', textAlign: 'center' }}
-              />
+          {mode === 'otp' && (
+            <div className="flex flex-col gap-4">
+              <p className="text-sm text-muted">
+                We sent a 6-digit code to <strong className="text-ink">{form.email}</strong>. Enter it below.
+              </p>
+              <Input label="Verification Code" name="otp" value={otp} maxLength={6}
+                     onChange={(e) => setOtp(e.target.value)} placeholder="000000"
+                     className="text-center text-2xl tracking-[0.4em] font-mono" />
+              <Button onClick={doOTP} disabled={busy} size="lg">
+                {busy ? 'Verifying…' : 'Verify Account'}
+              </Button>
             </div>
-            <button className="msubmit" onClick={handleOTP} disabled={busy}>
-              {busy ? 'Verifying…' : 'Verify Account'}
-            </button>
-          </div>
-        )}
+          )}
+        </div>
       </div>
     </div>
   );

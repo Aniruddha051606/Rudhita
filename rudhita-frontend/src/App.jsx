@@ -1,63 +1,37 @@
+// src/App.jsx
 import React, { useState, useEffect } from 'react';
 import { Routes, Route, useLocation } from 'react-router-dom';
-import { useCart } from './context/CartContext';
-import { useAuth } from './context/AuthContext';
+import { useAuth } from '@/context/AuthContext';
+import Header from '@/components/Header';
+import AuthModal from '@/components/AuthModal';
+import ProtectedRoute from '@/components/ProtectedRoute';
 
-// Pages
-import HomePage             from './pages/HomePage';
-import ProductCatalogPage   from './pages/ProductCatalogPage';
-import ProductDetailPage    from './pages/ProductDetailPage';
-import CartPage             from './pages/CartPage';
-import AuthPage             from './pages/AuthPage';
-import UserAccountPage      from './pages/UserAccountPage';
-import CheckoutPage         from './pages/CheckoutPage';
-import OrderConfirmationPage from './pages/OrderConfirmationPage';
-import OrderTrackingPage    from './pages/OrderTrackingPage';
-import AdminDashboardPage   from './pages/AdminDashboardPage';
+import HomePage from '@/pages/HomePage';
+import AuthPage from '@/pages/AuthPage';
 
-// Components
-import ProtectedRoute from './components/ProtectedRoute';
-import Header         from './components/Header';
-import AuthModal      from './components/AuthModal';
+// Placeholder pages for routes that get built in the next phase.
+const Stub = ({ title }) => (
+  <div className="max-w-7xl mx-auto px-5 py-24 text-center">
+    <p className="eyebrow mb-3">Coming soon</p>
+    <h1 className="h-display text-4xl">{title}</h1>
+  </div>
+);
 
-function AppLayout({ children, onLogout, onOpenAuth, onOpenCart, cartCount }) {
+function Shell({ children, onOpenAuth, onLogout }) {
   const location = useLocation();
-  const hideNavFooter = location.pathname === '/auth' || location.pathname.startsWith('/admin');
-
-  // Nav scroll effect
-  useEffect(() => {
-    const handleScroll = () => {
-      document.getElementById('nav')?.classList.toggle('scrolled', window.scrollY > 50);
-    };
-    window.addEventListener('scroll', handleScroll);
-    return () => window.removeEventListener('scroll', handleScroll);
-  }, []);
-
-  if (hideNavFooter) {
-    return children;
-  }
+  const bare = location.pathname === '/auth' || location.pathname.startsWith('/admin');
+  if (bare) return children;
 
   return (
     <>
-      <Header
-        onLogout={onLogout}
-        onOpenAuth={onOpenAuth}
-        onOpenCart={onOpenCart}
-        cartCount={cartCount}
-      />
-
-      <main>
-        {children}
-      </main>
-
-      <footer>
-        <div className="foot-inner">
-          <div className="foot-bottom" style={{ borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: '20px' }}>
-            <p className="foot-copy">© 2026 Rudhita. All rights reserved.</p>
-            <div className="foot-legal">
-              <a href="#">Privacy</a>
-              <a href="#">Terms</a>
-            </div>
+      <Header onOpenAuth={onOpenAuth} onLogout={onLogout} onOpenCart={() => {}} cartCount={0} />
+      <main className="relative z-[2]">{children}</main>
+      <footer className="border-t-2 border-ink mt-24">
+        <div className="max-w-7xl mx-auto px-5 py-10 flex flex-col sm:flex-row items-center justify-between gap-4">
+          <p className="font-mono text-xs text-muted">© 2026 Rudhita. All rights reserved.</p>
+          <div className="flex gap-6 font-sans text-sm">
+            <a href="#" className="hover:text-punch">Privacy</a>
+            <a href="#" className="hover:text-punch">Terms</a>
           </div>
         </div>
       </footer>
@@ -65,100 +39,28 @@ function AppLayout({ children, onLogout, onOpenAuth, onOpenCart, cartCount }) {
   );
 }
 
-function App() {
-  const [isAuthOpen, setIsAuthOpen] = useState(false);
-  const { count: cartCount, openDrawer, addItem } = useCart();
-  const { isLoggedIn, logout } = useAuth();
+export default function App() {
+  const { loggedIn, logout } = useAuth();
+  const [authOpen, setAuthOpen] = useState(false);
 
-  // Logout: blocklist the token server-side (handled in context), reset state.
-  // No hard redirect needed — the context state flip re-renders the UI, and
-  // ProtectedRoute will bounce the user off any protected page automatically.
-  const handleLogout = async () => {
-    await logout();
-  };
-
-  const handleAddToCart = (productId) => {
-    // isLoggedIn comes from context, so it's always the live value — the moment
-    // a login completes (modal or page), this is true without any reload.
-    if (!isLoggedIn) {
-      setIsAuthOpen(true);
-      return;
-    }
-    addItem(productId, 1); // CartContext handles the API call, drawer, and error
-  };
-
-  // Close the auth modal automatically once the user becomes logged in.
-  useEffect(() => {
-    if (isLoggedIn) setIsAuthOpen(false);
-  }, [isLoggedIn]);
+  // Close the modal the moment auth succeeds.
+  useEffect(() => { if (loggedIn) setAuthOpen(false); }, [loggedIn]);
 
   return (
-    <AppLayout
-      onLogout={handleLogout}
-      onOpenAuth={() => setIsAuthOpen(true)}
-      onOpenCart={openDrawer}
-      cartCount={cartCount}
-    >
+    <Shell onOpenAuth={() => setAuthOpen(true)} onLogout={logout}>
       <Routes>
-          {/* Public Routes */}
-          <Route path="/" element={<HomePage onAddToCart={handleAddToCart} />} />
-          <Route path="/products" element={<ProductCatalogPage />} />
-          <Route path="/product/:id" element={<ProductDetailPage />} />
-          <Route path="/cart" element={<CartPage />} />
-          <Route path="/auth" element={<AuthPage />} />
+        <Route path="/" element={<HomePage />} />
+        <Route path="/auth" element={<AuthPage />} />
+        <Route path="/products" element={<Stub title="Catalog" />} />
+        <Route path="/product/:id" element={<Stub title="Product" />} />
+        <Route path="/cart" element={<Stub title="Cart" />} />
+        <Route path="/account" element={<ProtectedRoute><Stub title="Account" /></ProtectedRoute>} />
+        <Route path="/checkout" element={<ProtectedRoute><Stub title="Checkout" /></ProtectedRoute>} />
+        <Route path="/admin" element={<ProtectedRoute requiredRole="admin"><Stub title="Admin" /></ProtectedRoute>} />
+        <Route path="*" element={<Stub title="Page not found" />} />
+      </Routes>
 
-          {/* Protected Routes - User */}
-          <Route
-            path="/account"
-            element={
-              <ProtectedRoute>
-                <UserAccountPage />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/checkout"
-            element={
-              <ProtectedRoute>
-                <CheckoutPage />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/order-confirmation"
-            element={
-              <ProtectedRoute>
-                <OrderConfirmationPage />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/order/:id/tracking"
-            element={
-              <ProtectedRoute>
-                <OrderTrackingPage />
-              </ProtectedRoute>
-            }
-          />
-
-          {/* Protected Routes - Admin */}
-          <Route
-            path="/admin"
-            element={
-              <ProtectedRoute requiredRole="admin">
-                <AdminDashboardPage />
-              </ProtectedRoute>
-            }
-          />
-
-          {/* Fallback Route */}
-          <Route path="*" element={<div style={{ padding: '40px', textAlign: 'center' }}>Page not found</div>} />
-        </Routes>
-
-        {/* --- MODALS --- */}
-        <AuthModal isOpen={isAuthOpen} onClose={() => setIsAuthOpen(false)} />
-    </AppLayout>
+      <AuthModal isOpen={authOpen} onClose={() => setAuthOpen(false)} />
+    </Shell>
   );
 }
-
-export default App;

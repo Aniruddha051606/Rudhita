@@ -1,0 +1,59 @@
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400&family=Archivo:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Bold & modern: high-contrast ink on warm paper, electric vermilion punch */
+    --ink:    20 14% 8%;     /* #16120F near-black */
+    --paper:  38 38% 96%;    /* #F7F2EA warm off-white */
+    --punch:  10 82% 54%;    /* #E8472A electric vermilion */
+    --clay:   18 52% 48%;    /* #B5683C terracotta */
+    --sand:   36 30% 90%;    /* #ECE4D8 card surface */
+    --line:   28 16% 82%;    /* hairline */
+    --muted:  24 8% 42%;     /* secondary text */
+    --destructive: 0 72% 48%;
+    --success: 152 45% 38%;
+  }
+
+  * { border-color: hsl(var(--line)); }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    @apply bg-paper text-ink font-sans antialiased;
+    font-feature-settings: 'ss01', 'cv01';
+  }
+
+  ::selection { background: hsl(var(--punch)); color: hsl(var(--paper)); }
+
+  /* Custom scrollbar */
+  ::-webkit-scrollbar { width: 11px; height: 11px; }
+  ::-webkit-scrollbar-track { background: hsl(var(--sand)); }
+  ::-webkit-scrollbar-thumb { background: hsl(var(--ink)); border: 3px solid hsl(var(--sand)); }
+}
+
+@layer components {
+  /* Display headings get the serif + tight tracking */
+  .h-display {
+    @apply font-display font-semibold tracking-tight leading-[0.95];
+  }
+
+  /* Eyebrow label — small uppercase mono tag */
+  .eyebrow {
+    @apply font-mono text-[11px] uppercase tracking-[0.2em] text-muted;
+  }
+
+  /* Grain/texture overlay for atmosphere */
+  .grain::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 1;
+    opacity: 0.035;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+}

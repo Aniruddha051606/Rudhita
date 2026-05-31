@@ -1,75 +1,73 @@
 // src/components/Header.jsx
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { useAuth } from '../context/AuthContext';
+import { ShoppingBag, User } from 'lucide-react';
+import { useAuth } from '@/context/AuthContext';
 
-/**
- * Site-wide header: announcement bar + primary nav.
- *
- * Auth state now comes from AuthContext, so the "Account / Logout" controls
- * update the instant login/logout happens — no reload, no stale closure, no
- * separate /auth/me fetch here (the context already has the profile).
- */
-export default function Header({ onLogout, onOpenAuth, onOpenCart, cartCount }) {
-  const { user, isLoggedIn, loading } = useAuth();
+export default function Header({ onOpenAuth, onOpenCart, onLogout, cartCount = 0 }) {
+  const { user, loggedIn, loading } = useAuth();
+  const [scrolled, setScrolled] = useState(false);
 
-  // Optional-chaining prevents a crash if the profile hasn't loaded yet.
+  useEffect(() => {
+    const onScroll = () => setScrolled(window.scrollY > 40);
+    window.addEventListener('scroll', onScroll);
+    return () => window.removeEventListener('scroll', onScroll);
+  }, []);
+
   const firstName = user?.name?.split(' ')?.[0] ?? null;
 
   return (
     <>
-      {/* Announcement bar */}
-      <div className="announce">
-        <div className="marquee">
-          <span>Complimentary shipping on orders above ₹3,000</span>
-          <span>Handcrafted with intention, designed for life</span>
-          <span>New arrivals – Monsoon Edit 2026 now live</span>
-          <span>All pieces made to order across India</span>
+      {/* Marquee announcement */}
+      <div className="bg-ink text-paper overflow-hidden border-b-2 border-ink">
+        <div className="flex whitespace-nowrap animate-marquee py-2">
+          {[0, 1].map((dup) => (
+            <div key={dup} className="flex shrink-0 font-mono text-[11px] uppercase tracking-[0.2em]">
+              {['Complimentary shipping above ₹3,000', 'Handcrafted with intention', 'Monsoon Edit 2026 — now live', 'Made to order across India']
+                .map((t, i) => <span key={i} className="mx-6 flex items-center gap-6">{t}<span className="text-punch">✦</span></span>)}
+            </div>
+          ))}
         </div>
       </div>
 
-      {/* Primary navigation */}
-      <nav id="nav">
-        <div className="nav-inner">
-          <div className="nav-left">
-            <Link to="/products">Shop</Link>
-            <Link to="/#philosophy">Story</Link>
-            <a href="mailto:hello@rudhita.com">Contact</a>
+      {/* Nav */}
+      <nav className={`sticky top-0 z-40 border-b-2 border-ink bg-paper/95 backdrop-blur transition-shadow ${scrolled ? 'shadow-brutal' : ''}`}>
+        <div className="max-w-7xl mx-auto flex items-center justify-between px-5 h-16">
+          <div className="hidden md:flex items-center gap-6 font-sans font-medium text-sm">
+            <Link to="/products" className="hover:text-punch transition-colors">Shop</Link>
+            <Link to="/#philosophy" className="hover:text-punch transition-colors">Story</Link>
+            <a href="mailto:hello@rudhita.com" className="hover:text-punch transition-colors">Contact</a>
           </div>
 
-          <Link to="/" className="nav-logo">Rudhita</Link>
+          <Link to="/" className="font-display text-2xl font-bold tracking-tight absolute left-1/2 -translate-x-1/2">
+            Rudhita
+          </Link>
 
-          <div className="nav-right">
-            {/* While the initial profile probe is in flight AND we're logged in,
-                show an invisible placeholder to avoid a flicker. Once settled,
-                show the real controls. If logged out, show Account immediately. */}
-            {isLoggedIn && loading ? (
-              <span
-                className="nav-link"
-                aria-hidden="true"
-                style={{ opacity: 0, pointerEvents: 'none' }}
-              >
-                Account
-              </span>
-            ) : isLoggedIn ? (
+          <div className="flex items-center gap-2 ml-auto">
+            {loggedIn && loading ? (
+              <span className="w-20" aria-hidden />
+            ) : loggedIn ? (
               <>
-                <Link to="/account" className="nav-link">
-                  {firstName ? `Hi, ${firstName}` : 'Account'}
+                <Link to="/account" className="flex items-center gap-1.5 font-sans font-medium text-sm hover:text-punch transition-colors">
+                  <User size={16} /> {firstName ? firstName : 'Account'}
                 </Link>
-                <button className="nav-link" onClick={onLogout}>Logout</button>
+                <button onClick={onLogout} className="font-sans font-medium text-sm text-muted hover:text-punch transition-colors px-2">
+                  Logout
+                </button>
               </>
             ) : (
-              <button className="nav-link" onClick={onOpenAuth}>Account</button>
+              <button onClick={onOpenAuth} className="flex items-center gap-1.5 font-sans font-medium text-sm hover:text-punch transition-colors">
+                <User size={16} /> Account
+              </button>
             )}
 
-            <button className="cart-pill" onClick={onOpenCart}>
-              Cart{' '}
-              <span
-                className="cart-dot"
-                style={{ display: cartCount > 0 ? 'flex' : 'none' }}
-              >
-                {cartCount}
-              </span>
+            <button onClick={onOpenCart} className="relative flex items-center gap-1.5 border-2 border-ink px-3 h-9 font-sans font-semibold text-sm hover:bg-ink hover:text-paper transition-colors">
+              <ShoppingBag size={16} /> Cart
+              {cartCount > 0 && (
+                <span className="absolute -top-2 -right-2 bg-punch text-paper text-[10px] font-bold w-5 h-5 flex items-center justify-center border-2 border-ink">
+                  {cartCount}
+                </span>
+              )}
             </button>
           </div>
         </div>

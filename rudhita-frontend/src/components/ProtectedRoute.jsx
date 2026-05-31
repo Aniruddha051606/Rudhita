@@ -1,33 +1,23 @@
+// src/components/ProtectedRoute.jsx
 import React from 'react';
 import { Navigate } from 'react-router-dom';
-import { useAuth } from '../context/AuthContext';
+import { useAuth } from '@/context/AuthContext';
+import { Spinner } from '@/components/ui/Spinner';
 
-export function ProtectedRoute({ children, requiredRole = null }) {
-  const { user, isLoggedIn, loading } = useAuth();
+export default function ProtectedRoute({ children, requiredRole = null }) {
+  const { user, loggedIn, loading } = useAuth();
 
-  // Wait for the initial /auth/me probe before deciding anything, so we don't
-  // briefly redirect a logged-in user while their profile is still loading.
   if (loading) {
     return (
-      <div style={{
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        minHeight: '60vh', fontSize: '14px', opacity: 0.5,
-        fontFamily: 'var(--font-sans)',
-      }}>
-        Loading…
+      <div className="flex items-center justify-center min-h-[60vh] gap-3 text-muted">
+        <Spinner /> <span className="font-mono text-sm">Loading…</span>
       </div>
     );
   }
 
-  // No token → not logged in → go to /auth. This is the ONLY thing that sends
-  // the user to the login page. A failed /auth/me alone (cold start, blip)
-  // does NOT clear the token, so it cannot cause a redirect loop.
-  if (!isLoggedIn) return <Navigate to="/auth" replace />;
-
-  // Admin gate — optional chaining is safe if the profile didn't load.
+  // Only the absence of a token sends you to /auth. A failed /auth/me does not.
+  if (!loggedIn) return <Navigate to="/auth" replace />;
   if (requiredRole === 'admin' && !user?.is_admin) return <Navigate to="/" replace />;
 
   return children;
 }
-
-export default ProtectedRoute;

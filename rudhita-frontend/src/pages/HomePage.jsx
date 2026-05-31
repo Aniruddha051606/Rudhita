@@ -1,217 +1,59 @@
-import React, { useState, useEffect } from 'react';
+// src/pages/HomePage.jsx
+import React from 'react';
 import { Link } from 'react-router-dom';
-import { ProductCard } from '../components/ProductCard';
-import { Button } from '../components/Button';
-import { Loader } from '../components/Loader';
-import { API } from '../utils/api';
-import './Pages.css';
+import { ArrowRight } from 'lucide-react';
+import { Button } from '@/components/ui/Button';
 
-export function HomePage({ onAddToCart }) {
-  const [featuredProducts, setFeaturedProducts] = useState([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [email, setEmail] = useState('');
-  const [subscribeMessage, setSubscribeMessage] = useState('');
-
-  useEffect(() => {
-    loadFeaturedProducts();
-    observeAnimations();
-  }, []);
-
-  const loadFeaturedProducts = async () => {
-    try {
-      setIsLoading(true);
-      const data = await API.products.featured();
-      setFeaturedProducts(data.products || []);
-    } catch (error) {
-      console.error('Error loading featured products:', error);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const observeAnimations = () => {
-    const observer = new IntersectionObserver((entries) => {
-      entries.forEach(entry => {
-        if (entry.isIntersecting) {
-          entry.target.classList.add('vis');
-        }
-      });
-    }, { threshold: 0.1 });
-
-    document.querySelectorAll('.rv').forEach(el => observer.observe(el));
-  };
-
-  const handleSubscribe = (e) => {
-    e.preventDefault();
-    // TODO: Connect to newsletter API
-    setSubscribeMessage('Thank you for subscribing!');
-    setEmail('');
-    setTimeout(() => setSubscribeMessage(''), 3000);
-  };
-
+// Foundation placeholder — full catalog/featured grid comes in the Pages phase.
+export default function HomePage() {
   return (
-    <div className="home-page">
-      {/* Hero Section */}
-      <section className="hero">
-        <div className="hero-copy">
-          <p className="hero-eyebrow rv rv-1">Premium Oversized Luxury</p>
-          <h1 className="hero-h1 rv rv-2">
-            Crafted for <em>Life</em>
-          </h1>
-          <p className="hero-body rv rv-3">
-            Experience the perfect blend of comfort and style. Our oversized t-shirts are designed with premium fabrics and timeless aesthetics for the modern, conscious consumer.
-          </p>
-          <div className="hero-actions rv rv-4">
-            <Link to="/products" className="btn-solid">Explore Collection</Link>
-            <button
-              className="btn-text"
-              onClick={() => document.getElementById('philosophy')?.scrollIntoView({ behavior: 'smooth' })}
-            >
-              Learn Our Story
-            </button>
-          </div>
+    <div className="grain">
+      {/* Hero */}
+      <section className="max-w-7xl mx-auto px-5 pt-16 pb-24 relative">
+        <p className="eyebrow text-punch mb-6 animate-fade-up">Crafted Luxury · Est. 2026</p>
+        <h1 className="h-display text-6xl md:text-8xl max-w-4xl animate-fade-up" style={{ animationDelay: '60ms' }}>
+          Objects with<br />
+          <span className="text-punch">intention.</span><br />
+          Built to last.
+        </h1>
+        <p className="mt-8 max-w-md text-lg text-muted animate-fade-up" style={{ animationDelay: '120ms' }}>
+          A small studio making considered pieces, by hand, across India.
+          No trends. No waste. Just work that endures.
+        </p>
+        <div className="mt-10 flex flex-wrap gap-4 animate-fade-up" style={{ animationDelay: '180ms' }}>
+          <Link to="/products"><Button size="lg" variant="punch">Explore the collection <ArrowRight size={18} /></Button></Link>
+          <Link to="/#philosophy"><Button size="lg" variant="outline">Our story</Button></Link>
         </div>
 
-        <div className="hero-canvas">
-          <div className="hero-bg" />
-          <div className="hero-glow1" />
-          <div className="hero-glow2" />
-          <p className="hero-caption">
-            Handcrafted with intention, designed for those who value quality over quantity.
-          </p>
-          <div className="hero-scroll">
-            <span>Scroll</span>
-          </div>
-        </div>
+        {/* Decorative geometric block */}
+        <div className="hidden lg:block absolute top-16 right-5 w-64 h-64 border-2 border-ink bg-sand shadow-brutalLg -rotate-3" />
+        <div className="hidden lg:block absolute top-32 right-24 w-40 h-40 bg-punch border-2 border-ink shadow-brutal rotate-6" />
       </section>
 
-      {/* Featured Products Section */}
-      <section className="products-wrap">
-        <div className="sec-head">
-          <p className="sec-eye">Curated Selection</p>
-          <h2 className="sec-title">Featured <em>Pieces</em></h2>
-        </div>
-
-        {isLoading ? (
-          <Loader />
-        ) : (
-          <div className="prod-grid">
-            {featuredProducts.slice(0, 8).map((product) => (
-              <ProductCard
-                key={product.id}
-                id={product.id}
-                title={product.name}
-                price={product.price}
-                originalPrice={product.original_price}
-                image={product.image_url}
-                tag={product.category}
-                onAddToCart={onAddToCart}
-              />
-            ))}
-          </div>
-        )}
-
-        <div style={{ textAlign: 'center', paddingTop: '48px', paddingBottom: '48px' }}>
-          <Link to="/products" className="btn-solid">View All Products</Link>
-        </div>
-      </section>
-
-      {/* Categories Section */}
-      <section className="categories-section">
-        <div className="sec-head">
-          <p className="sec-eye">Shop By</p>
-          <h2 className="sec-title">Category</h2>
-        </div>
-
-        <div className="cat-grid">
-          <Link to="/products?category=Essentials" className="cat-card cat-1 rv rv-1">
-            <div className="cat-bg" />
-            <div className="cat-flare" />
-            <div className="cat-content">
-              <p className="cat-lbl">Collection</p>
-              <h3 className="cat-name">Essentials</h3>
-              <div className="cat-arrow">
-                <span>Explore</span> →
-              </div>
+      {/* Feature strip */}
+      <section className="border-y-2 border-ink bg-ink text-paper">
+        <div className="max-w-7xl mx-auto px-5 py-10 grid sm:grid-cols-3 gap-8">
+          {[
+            ['Made to order', 'Nothing sits in a warehouse. We make each piece when you order it.'],
+            ['Lifetime repair', 'Bring it back when it wears. We fix what we make, for as long as you own it.'],
+            ['Carbon-neutral shipping', 'Every order ships offset, in plastic-free packaging.'],
+          ].map(([t, d], i) => (
+            <div key={i} className="animate-fade-up" style={{ animationDelay: `${i * 80}ms` }}>
+              <p className="font-display text-xl font-semibold mb-2">{t}</p>
+              <p className="text-sm text-paper/70">{d}</p>
             </div>
-          </Link>
-
-          <Link to="/products?category=Premium" className="cat-card cat-2 rv rv-2">
-            <div className="cat-bg" />
-            <div className="cat-flare" />
-            <div className="cat-content">
-              <p className="cat-lbl">Collection</p>
-              <h3 className="cat-name">Premium</h3>
-              <div className="cat-arrow">
-                <span>Explore</span> →
-              </div>
-            </div>
-          </Link>
-
-          <Link to="/products?category=Limited" className="cat-card cat-3 rv rv-3">
-            <div className="cat-bg" />
-            <div className="cat-flare" />
-            <div className="cat-content">
-              <p className="cat-lbl">Collection</p>
-              <h3 className="cat-name">Limited</h3>
-              <div className="cat-arrow">
-                <span>Explore</span> →
-              </div>
-            </div>
-          </Link>
+          ))}
         </div>
       </section>
 
-      {/* Philosophy/Brand Story Section */}
-      <section id="philosophy" className="philo">
-        <div className="rv rv-1">
-          <p className="philo-eye">Our Philosophy</p>
-          <h2 className="philo-quote">
-            Oversized isn't just a fit. It's a lifestyle choice.
-          </h2>
-          <div className="philo-rule" />
-          <p className="philo-body">
-            We believe in creating pieces that transcend seasons and trends. Each oversized t-shirt is a canvas for self-expression, designed to make you feel confident and comfortable in your own style.
-          </p>
-          <Link to="/products" className="btn-solid">Start Shopping</Link>
-        </div>
-
-        <div className="philo-visual rv rv-2">
-          <div className="philo-v-bg" />
-          <div className="philo-v-glow" />
-          <p className="philo-v-cap">
-            Every piece tells a story of quality, intention, and timeless design.
-          </p>
-        </div>
-      </section>
-
-      {/* Newsletter Section */}
-      <section className="newsletter">
-        <div className="newsletter-inner">
-          <h2 className="newsletter-title">Stay Updated</h2>
-          <p className="newsletter-subtitle">
-            Subscribe to get early access to new collections and exclusive offers.
-          </p>
-
-          <form className="nl-form" onSubmit={handleSubscribe}>
-            <input
-              type="email"
-              placeholder="Enter your email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className="nl-input"
-              required
-            />
-            <button type="submit" className="btn-solid">Subscribe</button>
-          </form>
-
-          {subscribeMessage && (
-            <p className="newsletter-success">{subscribeMessage}</p>
-          )}
-        </div>
+      <section className="max-w-7xl mx-auto px-5 py-24 text-center">
+        <p className="eyebrow mb-4">Coming together</p>
+        <h2 className="h-display text-4xl mb-4">The full storefront lands next.</h2>
+        <p className="text-muted max-w-md mx-auto">
+          This is the foundation — design system, auth, and layout. Catalog, product
+          pages, cart and checkout build on top of it.
+        </p>
       </section>
     </div>
   );
 }
-
-export default HomePage;
