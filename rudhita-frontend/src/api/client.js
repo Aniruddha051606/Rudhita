@@ -136,6 +136,20 @@ export const API = {
   orders: {
     list: () => request('/orders/'),
     get: (id) => request(`/orders/${id}`),
+    create: (payload) => request('/orders/', { method: 'POST', body: JSON.stringify(payload) }),
+    confirmPayment: (orderId, payload) =>
+      request(`/orders/${orderId}/confirm-payment`, { method: 'POST', body: JSON.stringify(payload) }),
+    track: (id) => request(`/orders/${id}/track`),
+  },
+  admin: {
+    stats: () => request('/admin/stats'),
+    orders: (params = {}) => {
+      const qs = new URLSearchParams(params).toString();
+      return request(`/admin/orders${qs ? `?${qs}` : ''}`);
+    },
+    products: () => request('/admin/products'),
+    updateOrderStatus: (id, status, extra = {}) =>
+      request(`/admin/orders/${id}/status`, { method: 'PATCH', body: JSON.stringify({ shipping_status: status, ...extra }) }),
   },
 };
 
