@@ -10,6 +10,7 @@ import { Spinner } from '@/components/ui/Spinner';
 import ProductEditor from '@/components/admin/ProductEditor';
 import OrderDetailDrawer from '@/components/admin/OrderDetailDrawer';
 import { generateInvoice } from '@/lib/invoice';
+import { CustomersPanel, InventoryPanel, ActivityPanel } from '@/components/admin/AdminPanels';
 
 const STATUS_OPTIONS = ['pending', 'processing', 'shipped', 'out for delivery', 'delivered'];
 
@@ -35,18 +36,21 @@ export default function AdminDashboardPage() {
   const [editorOpen, setEditorOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [selectedOrderId, setSelectedOrderId] = useState(null);
+  const [lowStock, setLowStock] = useState([]);
 
   const load = async () => {
     setLoading(true);
     try {
-      const [s, o, p] = await Promise.all([
+      const [s, o, p, ls] = await Promise.all([
         API.admin.stats().catch(() => null),
         API.admin.orders({ limit: 50 }).catch(() => ({ orders: [] })),
         API.admin.products().catch(() => ({ products: [] })),
+        API.admin.lowStock().catch(() => []),
       ]);
       setStats(s);
       setOrders(o.orders || []);
       setProducts(Array.isArray(p) ? p : (p.products || []));
+      setLowStock(Array.isArray(ls) ? ls : []);
     } finally { setLoading(false); }
   };
   useEffect(() => { load(); }, []);
@@ -86,7 +90,7 @@ export default function AdminDashboardPage() {
       <div className="max-w-7xl mx-auto px-5 py-10">
         {/* Tabs */}
         <div className="flex gap-1 mb-8 border-2 border-ink p-1 w-fit">
-          {['overview', 'orders', 'products'].map((t) => (
+          {['overview', 'orders', 'products', 'inventory', 'customers', 'activity'].map((t) => (
             <button key={t} onClick={() => setTab(t)}
               className={`px-5 h-10 font-sans font-semibold text-sm capitalize transition-colors ${tab === t ? 'bg-ink text-paper' : 'hover:bg-sand'}`}>
               {t}
@@ -108,8 +112,30 @@ export default function AdminDashboardPage() {
               <StatCard icon={ShoppingCart} label="Pending" value={stats?.pending_orders ?? 0} />
               <StatCard icon={Package} label="Shipped" value={stats?.shipped_orders ?? 0} />
               <StatCard icon={Package} label="Delivered" value={stats?.delivered_orders ?? 0} />
-              <StatCard icon={AlertTriangle} label="Low Stock" value={stats?.low_stock_products ?? 0} />
+              <StatCard icon={AlertTriangle} label="Low Stock" value={stats?.low_stock_products ?? 0} accent={Number(stats?.low_stock_products) > 0} />
             </div>
+
+            {/* Low-stock list */}
+            {lowStock.length > 0 && (
+              <div className="mt-6 border-2 border-ink">
+                <div className="flex items-center gap-2 border-b-2 border-ink px-4 py-3 bg-sand">
+                  <AlertTriangle size={16} className="text-punch" />
+                  <span className="font-display font-semibold">Needs restock</span>
+                  <Badge variant="punch" className="ml-auto">{lowStock.length}</Badge>
+                </div>
+                <div className="divide-y-2 divide-line">
+                  {lowStock.map((p) => (
+                    <div key={p.id} className="flex items-center justify-between px-4 py-3">
+                      <div>
+                        <p className="font-medium text-sm">{p.name}</p>
+                        <p className="font-mono text-[11px] text-muted">{p.sku}</p>
+                      </div>
+                      <span className={`font-display font-bold ${p.stock_quantity <= 2 ? 'text-destructive' : 'text-punch'}`}>{p.stock_quantity} left</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </>
         ) : tab === 'orders' ? (
           <div className="border-2 border-ink overflow-x-auto">
@@ -158,7 +184,7 @@ export default function AdminDashboardPage() {
               </tbody>
             </table>
           </div>
-        ) : (
+        ) : tab === 'products' ? (
           // ── PRODUCTS ──
           <>
             <div className="flex justify-between items-center mb-5">
@@ -208,6 +234,12 @@ export default function AdminDashboardPage() {
               </table>
             </div>
           </>
+        ) : tab === 'inventory' ? (
+          <InventoryPanel />
+        ) : tab === 'customers' ? (
+          <CustomersPanel />
+        ) : (
+          <ActivityPanel />
         )}
       </div>
 

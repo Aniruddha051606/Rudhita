@@ -159,6 +159,20 @@ export const API = {
       request(`/admin/orders/${id}/refund`, { method: 'POST', body: JSON.stringify({}) }),
     setWaybill: (id, waybill) =>
       request(`/admin/orders/${id}/waybill?waybill=${encodeURIComponent(waybill)}`, { method: 'PATCH' }),
+    users: (params = {}) => {
+      const qs = new URLSearchParams(params).toString();
+      return request(`/admin/users${qs ? `?${qs}` : ''}`);
+    },
+    makeAdmin: (userId) => request(`/admin/users/${userId}/make-admin`, { method: 'PATCH' }),
+    inventory: (params = {}) => {
+      const qs = new URLSearchParams(params).toString();
+      return request(`/admin/inventory${qs ? `?${qs}` : ''}`);
+    },
+    lowStock: () => request('/admin/alerts/low-stock'),
+    auditLog: (params = {}) => {
+      const qs = new URLSearchParams(params).toString();
+      return request(`/admin/audit-log${qs ? `?${qs}` : ''}`);
+    },
   },
   reviews: {
     list:    (productId) => request(`/products/${productId}/reviews`),
