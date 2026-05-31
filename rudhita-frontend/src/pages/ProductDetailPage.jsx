@@ -1,7 +1,7 @@
 // src/pages/ProductDetailPage.jsx
 import React, { useEffect, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { Minus, Plus, ArrowLeft, ShieldCheck, Truck, RefreshCw } from 'lucide-react';
+import { Minus, Plus, ArrowLeft, ShieldCheck, Truck, RefreshCw, Heart } from 'lucide-react';
 import { API } from '@/api/client';
 import { useCart } from '@/context/CartContext';
 import { useAuth } from '@/context/AuthContext';
@@ -9,6 +9,7 @@ import { formatINR } from '@/lib/utils';
 import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
 import { Spinner } from '@/components/ui/Spinner';
+import ProductReviews from '@/components/ProductReviews';
 
 export default function ProductDetailPage({ onRequireAuth }) {
   const { id } = useParams();
@@ -22,6 +23,7 @@ export default function ProductDetailPage({ onRequireAuth }) {
   const [err, setErr] = useState('');
   const [adding, setAdding] = useState(false);
   const [added, setAdded] = useState(false);
+  const [wishlisted, setWishlisted] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -32,6 +34,24 @@ export default function ProductDetailPage({ onRequireAuth }) {
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [id]);
+
+  // Reflect wishlist state if logged in
+  useEffect(() => {
+    if (!loggedIn || !product) return;
+    let cancelled = false;
+    API.wishlist.list()
+      .then((items) => { if (!cancelled) setWishlisted((items || []).some((w) => w.product_id === product.id)); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [loggedIn, product]);
+
+  const toggleWishlist = async () => {
+    if (!loggedIn) { onRequireAuth?.(); return; }
+    try {
+      const res = await API.wishlist.toggle(product.id);
+      setWishlisted(res.action === 'added');
+    } catch (e) { setErr(e.message || 'Could not update wishlist.'); }
+  };
 
   const out = product && product.stock_quantity <= 0;
   const maxQty = Math.min(product?.stock_quantity || 1, 10);
@@ -111,6 +131,13 @@ export default function ProductDetailPage({ onRequireAuth }) {
               <Button onClick={handleAdd} disabled={adding} variant={added ? 'punch' : 'primary'} size="lg" className="flex-1">
                 {adding ? <Spinner className="text-paper" /> : added ? 'Added ✓' : 'Add to cart'}
               </Button>
+              <button
+                onClick={toggleWishlist}
+                aria-label="Toggle wishlist"
+                className={`w-14 h-14 flex items-center justify-center border-2 border-ink transition-colors ${wishlisted ? 'bg-punch text-paper' : 'hover:bg-sand'}`}
+              >
+                <Heart size={20} className={wishlisted ? 'fill-current' : ''} />
+              </button>
             </div>
           )}
           {err && product && <p className="font-mono text-xs text-destructive mb-4">{err}</p>}
@@ -126,6 +153,9 @@ export default function ProductDetailPage({ onRequireAuth }) {
           </div>
         </div>
       </div>
+
+      {/* Reviews */}
+      <ProductReviews productId={product.id} onRequireAuth={onRequireAuth} />
     </div>
   );
 }

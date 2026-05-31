@@ -1,5 +1,5 @@
 // src/App.jsx
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, Suspense, lazy } from 'react';
 import { Routes, Route, useLocation } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
 import { useCart } from '@/context/CartContext';
@@ -7,17 +7,27 @@ import Header from '@/components/Header';
 import AuthModal from '@/components/AuthModal';
 import CartDrawer from '@/components/CartDrawer';
 import ProtectedRoute from '@/components/ProtectedRoute';
+import { Spinner } from '@/components/ui/Spinner';
 
+// Eager: the two most-hit routes
 import HomePage from '@/pages/HomePage';
-import AuthPage from '@/pages/AuthPage';
 import ProductCatalogPage from '@/pages/ProductCatalogPage';
-import ProductDetailPage from '@/pages/ProductDetailPage';
-import CartPage from '@/pages/CartPage';
-import CheckoutPage from '@/pages/CheckoutPage';
-import OrderConfirmationPage from '@/pages/OrderConfirmationPage';
-import OrderTrackingPage from '@/pages/OrderTrackingPage';
-import UserAccountPage from '@/pages/UserAccountPage';
-import AdminDashboardPage from '@/pages/AdminDashboardPage';
+
+// Lazy: split the rest into separate chunks so the initial load is lean
+const ProductDetailPage     = lazy(() => import('@/pages/ProductDetailPage'));
+const CartPage              = lazy(() => import('@/pages/CartPage'));
+const AuthPage              = lazy(() => import('@/pages/AuthPage'));
+const CheckoutPage          = lazy(() => import('@/pages/CheckoutPage'));
+const OrderConfirmationPage = lazy(() => import('@/pages/OrderConfirmationPage'));
+const OrderTrackingPage     = lazy(() => import('@/pages/OrderTrackingPage'));
+const UserAccountPage       = lazy(() => import('@/pages/UserAccountPage'));
+const AdminDashboardPage    = lazy(() => import('@/pages/AdminDashboardPage'));
+
+const PageFallback = () => (
+  <div className="flex items-center justify-center min-h-[60vh] gap-3 text-muted">
+    <Spinner /> <span className="font-mono text-sm">Loading…</span>
+  </div>
+);
 
 const Stub = ({ title }) => (
   <div className="max-w-7xl mx-auto px-5 py-24 text-center">
@@ -62,19 +72,21 @@ export default function App() {
       onOpenCart={openDrawer}
       cartCount={count}
     >
-      <Routes>
-        <Route path="/" element={<HomePage />} />
-        <Route path="/auth" element={<AuthPage />} />
-        <Route path="/products" element={<ProductCatalogPage />} />
-        <Route path="/product/:id" element={<ProductDetailPage onRequireAuth={requireAuth} />} />
-        <Route path="/cart" element={<CartPage />} />
-        <Route path="/checkout" element={<ProtectedRoute><CheckoutPage /></ProtectedRoute>} />
-        <Route path="/order-confirmation" element={<ProtectedRoute><OrderConfirmationPage /></ProtectedRoute>} />
-        <Route path="/order/:id/tracking" element={<ProtectedRoute><OrderTrackingPage /></ProtectedRoute>} />
-        <Route path="/account" element={<ProtectedRoute><UserAccountPage /></ProtectedRoute>} />
-        <Route path="/admin" element={<ProtectedRoute requiredRole="admin"><AdminDashboardPage /></ProtectedRoute>} />
-        <Route path="*" element={<Stub title="Page not found" />} />
-      </Routes>
+      <Suspense fallback={<PageFallback />}>
+        <Routes>
+          <Route path="/" element={<HomePage />} />
+          <Route path="/auth" element={<AuthPage />} />
+          <Route path="/products" element={<ProductCatalogPage />} />
+          <Route path="/product/:id" element={<ProductDetailPage onRequireAuth={requireAuth} />} />
+          <Route path="/cart" element={<CartPage />} />
+          <Route path="/checkout" element={<ProtectedRoute><CheckoutPage /></ProtectedRoute>} />
+          <Route path="/order-confirmation" element={<ProtectedRoute><OrderConfirmationPage /></ProtectedRoute>} />
+          <Route path="/order/:id/tracking" element={<ProtectedRoute><OrderTrackingPage /></ProtectedRoute>} />
+          <Route path="/account" element={<ProtectedRoute><UserAccountPage /></ProtectedRoute>} />
+          <Route path="/admin" element={<ProtectedRoute requiredRole="admin"><AdminDashboardPage /></ProtectedRoute>} />
+          <Route path="*" element={<Stub title="Page not found" />} />
+        </Routes>
+      </Suspense>
 
       <AuthModal isOpen={authOpen} onClose={() => setAuthOpen(false)} />
       <CartDrawer />

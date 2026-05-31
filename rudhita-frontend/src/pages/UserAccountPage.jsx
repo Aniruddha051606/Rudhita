@@ -1,7 +1,7 @@
 // src/pages/UserAccountPage.jsx
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Package, LogOut } from 'lucide-react';
+import { Package, LogOut, Heart, Trash2 } from 'lucide-react';
 import { API } from '@/api/client';
 import { useAuth } from '@/context/AuthContext';
 import { formatINR } from '@/lib/utils';
@@ -19,11 +19,20 @@ const statusVariant = (s) => {
 export default function UserAccountPage() {
   const { user, logout } = useAuth();
   const [orders, setOrders] = useState([]);
+  const [wishlist, setWishlist] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    API.orders.list().then((d) => setOrders(d.orders || [])).catch(() => {}).finally(() => setLoading(false));
+    Promise.all([
+      API.orders.list().then((d) => setOrders(d.orders || [])).catch(() => {}),
+      API.wishlist.list().then((w) => setWishlist(Array.isArray(w) ? w : [])).catch(() => {}),
+    ]).finally(() => setLoading(false));
   }, []);
+
+  const removeWish = async (productId) => {
+    try { await API.wishlist.toggle(productId); setWishlist((prev) => prev.filter((w) => w.product_id !== productId)); }
+    catch { /* ignore */ }
+  };
 
   return (
     <div className="max-w-5xl mx-auto px-5 py-12">
@@ -79,6 +88,38 @@ export default function UserAccountPage() {
                 <span className="font-display font-bold">{formatINR(o.total_amount)}</span>
               </div>
             </Link>
+          ))}
+        </div>
+      )}
+
+      {/* Wishlist */}
+      <h2 className="font-display text-2xl font-semibold mt-12 mb-5 flex items-center gap-2">
+        <Heart size={22} className="text-punch" /> Wishlist
+      </h2>
+      {loading ? null : wishlist.length === 0 ? (
+        <div className="border-2 border-dashed border-line p-10 text-center text-muted">
+          <p>Nothing saved yet. Tap the heart on any product to save it here.</p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+          {wishlist.map((w) => (
+            <div key={w.id} className="border-2 border-ink group relative">
+              <Link to={`/product/${w.product_id}`} className="block">
+                <div className="aspect-[4/5] border-b-2 border-ink bg-sand overflow-hidden">
+                  {w.product?.image_url
+                    ? <img src={w.product.image_url} alt={w.product.name} className="w-full h-full object-cover" />
+                    : <div className="w-full h-full flex items-center justify-center font-display text-3xl text-line">R</div>}
+                </div>
+                <div className="p-3">
+                  <p className="font-display font-semibold text-sm leading-tight truncate">{w.product?.name}</p>
+                  <p className="font-sans font-bold text-sm mt-1">{formatINR(w.product?.price)}</p>
+                </div>
+              </Link>
+              <button onClick={() => removeWish(w.product_id)} aria-label="Remove from wishlist"
+                className="absolute top-2 right-2 w-8 h-8 flex items-center justify-center bg-paper border-2 border-ink hover:bg-destructive hover:text-paper hover:border-destructive transition-colors">
+                <Trash2 size={14} />
+              </button>
+            </div>
           ))}
         </div>
       )}

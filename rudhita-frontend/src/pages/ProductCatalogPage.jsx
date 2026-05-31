@@ -20,6 +20,16 @@ export default function ProductCatalogPage() {
   const [categories, setCategories] = useState([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
+  const [sort, setSort] = useState('newest');
+
+  // Client-side sort of the loaded set (backend returns newest-first by default).
+  const sortedProducts = React.useMemo(() => {
+    const arr = [...products];
+    if (sort === 'price-low') arr.sort((a, b) => Number(a.price) - Number(b.price));
+    else if (sort === 'price-high') arr.sort((a, b) => Number(b.price) - Number(a.price));
+    else if (sort === 'name') arr.sort((a, b) => a.name.localeCompare(b.name));
+    return arr;
+  }, [products, sort]);
 
   const load = useCallback(async (reset = false) => {
     setLoading(true);
@@ -72,7 +82,7 @@ export default function ProductCatalogPage() {
             className="h-12 w-full bg-paper border-2 border-ink pl-10 pr-4 font-sans text-[15px] focus:outline-none focus:shadow-brutalPunch transition-shadow"
           />
         </form>
-        <div className="flex gap-2 flex-wrap">
+        <div className="flex gap-2 flex-wrap items-center">
           <button
             onClick={() => setCategory('')}
             className={`px-4 h-12 border-2 border-ink font-sans font-medium text-sm transition-colors ${category === '' ? 'bg-ink text-paper' : 'hover:bg-sand'}`}
@@ -88,6 +98,16 @@ export default function ProductCatalogPage() {
               {c}
             </button>
           ))}
+          <select
+            value={sort}
+            onChange={(e) => setSort(e.target.value)}
+            className="h-12 border-2 border-ink bg-paper px-3 font-sans text-sm focus:outline-none focus:shadow-brutalPunch ml-auto"
+          >
+            <option value="newest">Newest</option>
+            <option value="price-low">Price: Low to High</option>
+            <option value="price-high">Price: High to Low</option>
+            <option value="name">Name A–Z</option>
+          </select>
         </div>
       </div>
 
@@ -105,7 +125,7 @@ export default function ProductCatalogPage() {
       ) : (
         <>
           <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
-            {products.map((p) => <ProductCard key={p.id} product={p} onAdd={handleAdd} />)}
+            {sortedProducts.map((p) => <ProductCard key={p.id} product={p} onAdd={handleAdd} />)}
           </div>
           {hasMore && (
             <div className="flex justify-center mt-12">

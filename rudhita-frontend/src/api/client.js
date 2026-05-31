@@ -151,6 +151,27 @@ export const API = {
     updateOrderStatus: (id, status, extra = {}) =>
       request(`/admin/orders/${id}/status`, { method: 'PATCH', body: JSON.stringify({ shipping_status: status, ...extra }) }),
   },
+  reviews: {
+    list:    (productId) => request(`/products/${productId}/reviews`),
+    summary: (productId) => request(`/products/${productId}/reviews/summary`),
+    create:  (productId, data) => request(`/products/${productId}/reviews`, { method: 'POST', body: JSON.stringify(data) }),
+    remove:  (productId, reviewId) => request(`/products/${productId}/reviews/${reviewId}`, { method: 'DELETE' }),
+  },
+  wishlist: {
+    list:   () => request('/wishlist'),
+    toggle: (productId) => request('/wishlist/toggle', { method: 'POST', body: JSON.stringify({ product_id: productId }) }),
+  },
+  adminProducts: {
+    // NOTE: create uses backend aliases originalPrice / stock
+    create: (data) => request('/admin/products', { method: 'POST', body: JSON.stringify(data) }),
+    update: (id, data) => request(`/admin/products/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+    remove: (id) => request(`/admin/products/${id}`, { method: 'DELETE' }),
+  },
+  upload: {
+    // 1) ask backend for a presigned R2 PUT URL, 2) PUT the file straight to R2
+    getUrl: (filename, contentType) =>
+      request('/admin/upload-url', { method: 'POST', body: JSON.stringify({ filename, content_type: contentType }) }),
+  },
 };
 
 export default API;
