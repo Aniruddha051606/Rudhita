@@ -8,6 +8,8 @@ import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Spinner } from '@/components/ui/Spinner';
 import ProductEditor from '@/components/admin/ProductEditor';
+import OrderDetailDrawer from '@/components/admin/OrderDetailDrawer';
+import { generateInvoice } from '@/lib/invoice';
 
 const STATUS_OPTIONS = ['pending', 'processing', 'shipped', 'out for delivery', 'delivered'];
 
@@ -32,6 +34,7 @@ export default function AdminDashboardPage() {
   const [savingId, setSavingId] = useState(null);
   const [editorOpen, setEditorOpen] = useState(false);
   const [editing, setEditing] = useState(null);
+  const [selectedOrderId, setSelectedOrderId] = useState(null);
 
   const load = async () => {
     setLoading(true);
@@ -118,14 +121,17 @@ export default function AdminDashboardPage() {
                   <th className="px-4 py-3">Total</th>
                   <th className="px-4 py-3">Payment</th>
                   <th className="px-4 py-3">Shipping</th>
+                  <th className="px-4 py-3 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y-2 divide-line">
                 {orders.length === 0 ? (
-                  <tr><td colSpan={5} className="px-4 py-12 text-center text-muted">No orders yet.</td></tr>
+                  <tr><td colSpan={6} className="px-4 py-12 text-center text-muted">No orders yet.</td></tr>
                 ) : orders.map((o) => (
                   <tr key={o.id} className="hover:bg-sand">
-                    <td className="px-4 py-3 font-semibold">#{o.id}</td>
+                    <td className="px-4 py-3">
+                      <button onClick={() => setSelectedOrderId(o.id)} className="font-semibold hover:text-punch underline-offset-2 hover:underline">#{o.id}</button>
+                    </td>
                     <td className="px-4 py-3">
                       <p className="font-medium">{o.customer_name}</p>
                       {o.customer_email && <p className="font-mono text-[11px] text-muted">{o.customer_email}</p>}
@@ -141,6 +147,11 @@ export default function AdminDashboardPage() {
                       >
                         {STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
                       </select>
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex gap-2 justify-end">
+                        <button onClick={() => setSelectedOrderId(o.id)} className="px-3 py-1.5 border-2 border-ink text-xs font-semibold hover:bg-ink hover:text-paper transition-colors">View</button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -205,6 +216,14 @@ export default function AdminDashboardPage() {
           product={editing}
           onClose={() => { setEditorOpen(false); setEditing(null); }}
           onSaved={onSaved}
+        />
+      )}
+
+      {selectedOrderId && (
+        <OrderDetailDrawer
+          orderId={selectedOrderId}
+          onClose={() => setSelectedOrderId(null)}
+          onChanged={load}
         />
       )}
     </div>

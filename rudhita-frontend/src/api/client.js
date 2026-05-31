@@ -147,9 +147,18 @@ export const API = {
       const qs = new URLSearchParams(params).toString();
       return request(`/admin/orders${qs ? `?${qs}` : ''}`);
     },
+    order: (id) => request(`/admin/orders/${id}`),
     products: () => request('/admin/products'),
     updateOrderStatus: (id, status, extra = {}) =>
       request(`/admin/orders/${id}/status`, { method: 'PATCH', body: JSON.stringify({ shipping_status: status, ...extra }) }),
+    fulfillOrder: (id, payload) =>
+      request(`/admin/orders/${id}/fulfill`, { method: 'POST', body: JSON.stringify(payload) }),
+    bulkFulfill: (orderIds) =>
+      request('/admin/orders/bulk-fulfill', { method: 'POST', body: JSON.stringify({ order_ids: orderIds }) }),
+    refundOrder: (id) =>
+      request(`/admin/orders/${id}/refund`, { method: 'POST', body: JSON.stringify({}) }),
+    setWaybill: (id, waybill) =>
+      request(`/admin/orders/${id}/waybill?waybill=${encodeURIComponent(waybill)}`, { method: 'PATCH' }),
   },
   reviews: {
     list:    (productId) => request(`/products/${productId}/reviews`),
