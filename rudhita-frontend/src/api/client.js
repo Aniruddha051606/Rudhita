@@ -169,6 +169,7 @@ export const API = {
       return request(`/admin/inventory${qs ? `?${qs}` : ''}`);
     },
     lowStock: () => request('/admin/alerts/low-stock'),
+    analytics: (days = 30) => request(`/admin/analytics?days=${days}`),
     auditLog: (params = {}) => {
       const qs = new URLSearchParams(params).toString();
       return request(`/admin/audit-log${qs ? `?${qs}` : ''}`);

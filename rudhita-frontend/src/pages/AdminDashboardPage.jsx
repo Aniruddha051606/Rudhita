@@ -11,6 +11,7 @@ import ProductEditor from '@/components/admin/ProductEditor';
 import OrderDetailDrawer from '@/components/admin/OrderDetailDrawer';
 import { generateInvoice } from '@/lib/invoice';
 import { CustomersPanel, InventoryPanel, ActivityPanel } from '@/components/admin/AdminPanels';
+import AnalyticsPanel from '@/components/admin/AnalyticsPanel';
 
 const STATUS_OPTIONS = ['pending', 'processing', 'shipped', 'out for delivery', 'delivered'];
 
@@ -30,7 +31,9 @@ export default function AdminDashboardPage() {
   const [stats, setStats] = useState(null);
   const [orders, setOrders] = useState([]);
   const [products, setProducts] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(true);     // overview load
+  const [tabLoading, setTabLoading] = useState(false); // per-tab load
+  const [loaded, setLoaded] = useState({});          // which tabs have fetched
   const [tab, setTab] = useState('overview');
   const [savingId, setSavingId] = useState(null);
   const [editorOpen, setEditorOpen] = useState(false);
@@ -38,22 +41,56 @@ export default function AdminDashboardPage() {
   const [selectedOrderId, setSelectedOrderId] = useState(null);
   const [lowStock, setLowStock] = useState([]);
 
-  const load = async () => {
+  // Overview only — lightweight, loads on mount.
+  const loadOverview = async () => {
     setLoading(true);
     try {
-      const [s, o, p, ls] = await Promise.all([
+      const [s, ls] = await Promise.all([
         API.admin.stats().catch(() => null),
-        API.admin.orders({ limit: 50 }).catch(() => ({ orders: [] })),
-        API.admin.products().catch(() => ({ products: [] })),
         API.admin.lowStock().catch(() => []),
       ]);
       setStats(s);
-      setOrders(o.orders || []);
-      setProducts(Array.isArray(p) ? p : (p.products || []));
       setLowStock(Array.isArray(ls) ? ls : []);
     } finally { setLoading(false); }
   };
-  useEffect(() => { load(); }, []);
+
+  // Orders / products fetch only when their tab is first opened (then cached).
+  const loadOrders = async (force = false) => {
+    if (loaded.orders && !force) return;
+    setTabLoading(true);
+    try {
+      const o = await API.admin.orders({ limit: 50 }).catch(() => ({ orders: [] }));
+      setOrders(o.orders || []);
+      setLoaded((l) => ({ ...l, orders: true }));
+    } finally { setTabLoading(false); }
+  };
+  const loadProducts = async (force = false) => {
+    if (loaded.products && !force) return;
+    setTabLoading(true);
+    try {
+      const p = await API.admin.products().catch(() => ({ products: [] }));
+      setProducts(Array.isArray(p) ? p : (p.products || []));
+      setLoaded((l) => ({ ...l, products: true }));
+    } finally { setTabLoading(false); }
+  };
+
+  useEffect(() => { loadOverview(); }, []);
+
+  // When the tab changes, lazily load that tab's data once.
+  useEffect(() => {
+    if (tab === 'orders') loadOrders();
+    else if (tab === 'products') loadProducts();
+    // inventory / customers / activity self-load in their own components
+    // eslint-disable-next-line
+  }, [tab]);
+
+  // Backwards-compatible refresh used by editor/drawer callbacks.
+  const load = () => {
+    loadOverview();
+    if (tab === 'orders') loadOrders(true);
+    if (tab === 'products') loadProducts(true);
+  };
+
 
   const openNew  = () => { setEditing(null); setEditorOpen(true); };
   const openEdit = (p) => { setEditing(p); setEditorOpen(true); };
@@ -74,6 +111,39 @@ export default function AdminDashboardPage() {
     finally { setSavingId(null); }
   };
 
+  // Order filtering + search
+  const [orderSearch, setOrderSearch] = useState('');
+  const [fPayment, setFPayment] = useState('');
+  const [fShipping, setFShipping] = useState('');
+  const filteredOrders = React.useMemo(() => {
+    const q = orderSearch.trim().toLowerCase();
+    return orders.filter((o) => {
+      if (fPayment && (o.payment_status || '').toLowerCase() !== fPayment) return false;
+      if (fShipping && (o.shipping_status || '').toLowerCase() !== fShipping) return false;
+      if (q) {
+        const hay = `${o.id} ${o.customer_name || ''} ${o.customer_email || ''}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [orders, orderSearch, fPayment, fShipping]);
+
+  // Bulk fulfill
+  const [selectedOrders, setSelectedOrders] = useState([]);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const toggleSelect = (id) => setSelectedOrders((p) => p.includes(id) ? p.filter((x) => x !== id) : [...p, id]);
+  const bulkFulfill = async () => {
+    if (selectedOrders.length === 0) return;
+    if (!window.confirm(`Mark ${selectedOrders.length} order(s) as fulfilled?`)) return;
+    setBulkBusy(true);
+    try {
+      await API.admin.bulkFulfill(selectedOrders);
+      setSelectedOrders([]);
+      loadOrders(true);
+    } catch (e) { alert(e.message || 'Bulk fulfill failed.'); }
+    finally { setBulkBusy(false); }
+  };
+
   return (
     <div className="min-h-screen bg-paper">
       {/* Top bar */}
@@ -90,7 +160,7 @@ export default function AdminDashboardPage() {
       <div className="max-w-7xl mx-auto px-5 py-10">
         {/* Tabs */}
         <div className="flex gap-1 mb-8 border-2 border-ink p-1 w-fit">
-          {['overview', 'orders', 'products', 'inventory', 'customers', 'activity'].map((t) => (
+          {['overview', 'analytics', 'orders', 'products', 'inventory', 'customers', 'activity'].map((t) => (
             <button key={t} onClick={() => setTab(t)}
               className={`px-5 h-10 font-sans font-semibold text-sm capitalize transition-colors ${tab === t ? 'bg-ink text-paper' : 'hover:bg-sand'}`}>
               {t}
@@ -98,7 +168,9 @@ export default function AdminDashboardPage() {
           ))}
         </div>
 
-        {loading ? (
+        {loading && tab === 'overview' ? (
+          <div className="flex items-center justify-center py-32 gap-3 text-muted"><Spinner /> <span className="font-mono text-sm">Loading…</span></div>
+        ) : tabLoading && (tab === 'orders' || tab === 'products') ? (
           <div className="flex items-center justify-center py-32 gap-3 text-muted"><Spinner /> <span className="font-mono text-sm">Loading…</span></div>
         ) : tab === 'overview' ? (
           <>
@@ -138,10 +210,37 @@ export default function AdminDashboardPage() {
             )}
           </>
         ) : tab === 'orders' ? (
-          <div className="border-2 border-ink overflow-x-auto">
+          <>
+            <div className="flex flex-wrap gap-3 mb-4 items-center">
+              <input
+                value={orderSearch}
+                onChange={(e) => setOrderSearch(e.target.value)}
+                placeholder="Search order #, name, email…"
+                className="h-10 border-2 border-ink bg-paper px-3 font-sans text-sm focus:outline-none focus:shadow-brutalPunch flex-1 min-w-[200px]"
+              />
+              <select value={fPayment} onChange={(e) => setFPayment(e.target.value)}
+                className="h-10 border-2 border-ink bg-paper px-3 font-sans text-sm focus:outline-none focus:shadow-brutalPunch">
+                <option value="">All payments</option>
+                <option value="paid">Paid</option>
+                <option value="pending">Pending</option>
+              </select>
+              <select value={fShipping} onChange={(e) => setFShipping(e.target.value)}
+                className="h-10 border-2 border-ink bg-paper px-3 font-sans text-sm focus:outline-none focus:shadow-brutalPunch">
+                <option value="">All shipping</option>
+                {STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+              {selectedOrders.length > 0 && (
+                <Button variant="punch" size="sm" disabled={bulkBusy} onClick={bulkFulfill}>
+                  {bulkBusy ? 'Working…' : `Fulfill ${selectedOrders.length} selected`}
+                </Button>
+              )}
+            </div>
+
+            <div className="border-2 border-ink overflow-x-auto">
             <table className="w-full text-left">
               <thead className="bg-ink text-paper font-mono text-[11px] uppercase tracking-wider">
                 <tr>
+                  <th className="px-3 py-3 w-8"></th>
                   <th className="px-4 py-3">Order</th>
                   <th className="px-4 py-3">Customer</th>
                   <th className="px-4 py-3">Total</th>
@@ -151,10 +250,13 @@ export default function AdminDashboardPage() {
                 </tr>
               </thead>
               <tbody className="divide-y-2 divide-line">
-                {orders.length === 0 ? (
-                  <tr><td colSpan={6} className="px-4 py-12 text-center text-muted">No orders yet.</td></tr>
-                ) : orders.map((o) => (
+                {filteredOrders.length === 0 ? (
+                  <tr><td colSpan={7} className="px-4 py-12 text-center text-muted">No matching orders.</td></tr>
+                ) : filteredOrders.map((o) => (
                   <tr key={o.id} className="hover:bg-sand">
+                    <td className="px-3 py-3">
+                      <input type="checkbox" checked={selectedOrders.includes(o.id)} onChange={() => toggleSelect(o.id)} className="w-4 h-4 accent-punch" />
+                    </td>
                     <td className="px-4 py-3">
                       <button onClick={() => setSelectedOrderId(o.id)} className="font-semibold hover:text-punch underline-offset-2 hover:underline">#{o.id}</button>
                     </td>
@@ -183,7 +285,8 @@ export default function AdminDashboardPage() {
                 ))}
               </tbody>
             </table>
-          </div>
+            </div>
+          </>
         ) : tab === 'products' ? (
           // ── PRODUCTS ──
           <>
@@ -234,6 +337,8 @@ export default function AdminDashboardPage() {
               </table>
             </div>
           </>
+        ) : tab === 'analytics' ? (
+          <AnalyticsPanel />
         ) : tab === 'inventory' ? (
           <InventoryPanel />
         ) : tab === 'customers' ? (
