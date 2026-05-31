@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Routes, Route, useLocation } from 'react-router-dom';
-import { API, isAuthenticated, clearAuthTokens } from './utils/api';
 import { useCart } from './context/CartContext';
+import { useAuth } from './context/AuthContext';
 
 // Pages
 import HomePage             from './pages/HomePage';
@@ -53,7 +53,7 @@ function AppLayout({ children, onLogout, onOpenAuth, onOpenCart, cartCount }) {
       <footer>
         <div className="foot-inner">
           <div className="foot-bottom" style={{ borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: '20px' }}>
-            <p className="foot-copy">Ã‚Â© 2026 Rudhita. All rights reserved.</p>
+            <p className="foot-copy">© 2026 Rudhita. All rights reserved.</p>
             <div className="foot-legal">
               <a href="#">Privacy</a>
               <a href="#">Terms</a>
@@ -68,24 +68,29 @@ function AppLayout({ children, onLogout, onOpenAuth, onOpenCart, cartCount }) {
 function App() {
   const [isAuthOpen, setIsAuthOpen] = useState(false);
   const { count: cartCount, openDrawer, addItem } = useCart();
+  const { isLoggedIn, logout } = useAuth();
 
-  // BUG 5 FIX: clear both tokens, call backend to blocklist JTI
+  // Logout: blocklist the token server-side (handled in context), reset state.
+  // No hard redirect needed — the context state flip re-renders the UI, and
+  // ProtectedRoute will bounce the user off any protected page automatically.
   const handleLogout = async () => {
-    try { await API.auth.logout(); } catch {}
-    clearAuthTokens();
-    window.location.href = '/';
+    await logout();
   };
 
   const handleAddToCart = (productId) => {
-    // Evaluate auth at the moment of the click, NOT from a value captured at
-    // mount. After an in-modal login (which writes tokens to localStorage),
-    // isAuthenticated() now reflects the live state on the very next click.
-    if (!isAuthenticated()) {
+    // isLoggedIn comes from context, so it's always the live value — the moment
+    // a login completes (modal or page), this is true without any reload.
+    if (!isLoggedIn) {
       setIsAuthOpen(true);
       return;
     }
     addItem(productId, 1); // CartContext handles the API call, drawer, and error
   };
+
+  // Close the auth modal automatically once the user becomes logged in.
+  useEffect(() => {
+    if (isLoggedIn) setIsAuthOpen(false);
+  }, [isLoggedIn]);
 
   return (
     <AppLayout

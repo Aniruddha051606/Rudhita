@@ -1,9 +1,12 @@
 // src/components/AuthModal.jsx
 import React, { useState, useEffect } from 'react';
-import { API, setAuthTokens } from '../utils/api';
+import { API } from '../utils/api';
+import { useAuth } from '../context/AuthContext';
 import GoogleLoginButton from './GoogleLoginButton';
 
 export default function AuthModal({ isOpen, onClose }) {
+  const { login } = useAuth();
+
   // Modes: 'login' | 'register' | 'otp'
   const [mode, setMode] = useState('login');
 
@@ -14,9 +17,10 @@ export default function AuthModal({ isOpen, onClose }) {
   const [phone,    setPhone]    = useState('');
   const [otp,      setOtp]      = useState('');
 
-  // Messaging state
+  // Messaging + busy state
   const [error,   setError]   = useState('');
   const [success, setSuccess] = useState('');
+  const [busy,    setBusy]    = useState(false);
 
   // Clear messages whenever the modal opens / closes
   useEffect(() => {
@@ -31,48 +35,70 @@ export default function AuthModal({ isOpen, onClose }) {
     if (e.target.classList.contains('overlay')) onClose();
   };
 
-  // ── LOGIN ─────────────────────────────────────────────────────────────────
+  // Shared: take tokens from a successful login (password OR Google), hand them
+  // to the AuthContext (which stores them + updates state instantly), then close.
+  const finishLogin = async (tokens) => {
+    await login(tokens);   // updates global state — header/cart re-render, no reload
+    onClose();
+  };
+
+  // ── LOGIN ──────────────────────────────────────────────────────────────────
   const handleLogin = async () => {
     setError(''); setSuccess('');
+    if (!email || !password) {
+      setError('Please enter your email and password.');
+      return;
+    }
+    setBusy(true);
     try {
-      /**
-       * FIX: api.js now formats credentials as URLSearchParams internally.
-       *      No raw fetch() here — all calls go through the centralised utility
-       *      so the base URL, auth headers, and error handling are consistent.
-       */
       const data = await API.auth.login({ email, password });
-
-      // Persist BOTH tokens so the refresh flow works server-side.
-      setAuthTokens({ access_token: data.access_token, refresh_token: data.refresh_token });
-
-      // Hard-reload updates the Navbar "Logout" state without needing global state.
-      window.location.reload();
+      await finishLogin(data);
     } catch (err) {
-      setError(err.message || "Sign in failed. Check your credentials.");
+      setError(err.message || 'Sign in failed. Check your credentials.');
+    } finally {
+      setBusy(false);
     }
   };
 
-  // ── REGISTER ──────────────────────────────────────────────────────────────
+  // ── REGISTER ─────────────────────────────────────────────────────────────────
   const handleRegister = async () => {
     setError(''); setSuccess('');
+    if (!name || !email || !password) {
+      setError('Please fill in your name, email, and password.');
+      return;
+    }
+    setBusy(true);
     try {
       await API.auth.register({ name, email, password, phone: phone || null });
       setSuccess('Verification code sent! Check your email.');
       setMode('otp');
     } catch (err) {
-      setError(err.message || "Registration failed.");
+      setError(err.message || 'Registration failed.');
+    } finally {
+      setBusy(false);
     }
   };
 
-  // ── OTP VERIFY ────────────────────────────────────────────────────────────
+  // ── OTP VERIFY ───────────────────────────────────────────────────────────────
   const handleOTP = async () => {
     setError(''); setSuccess('');
+    setBusy(true);
     try {
       await API.auth.verifyOTP({ email, otp });
       setSuccess('Account verified! You can now sign in.');
       setMode('login');
     } catch (err) {
-      setError(err.message || "Verification failed. Invalid code.");
+      setError(err.message || 'Verification failed. Invalid code.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onGoogleSuccess = async (tokens) => {
+    try {
+      await finishLogin(tokens);
+    } catch (err) {
+      setError(err.message || 'Google sign-in failed.');
     }
   };
 
@@ -107,7 +133,7 @@ export default function AuthModal({ isOpen, onClose }) {
         {mode === 'login' && (
           <div className="mform active">
             <GoogleLoginButton
-              onSuccess={() => { window.location.reload(); }}
+              onSuccess={onGoogleSuccess}
               onError={(msg) => setError(msg || 'Google sign-in failed.')}
             />
             <div style={{ display:'flex', alignItems:'center', gap:12, margin:'16px 0' }}>
@@ -131,9 +157,12 @@ export default function AuthModal({ isOpen, onClose }) {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="••••••••"
+                onKeyDown={(e) => { if (e.key === 'Enter') handleLogin(); }}
               />
             </div>
-            <button className="msubmit" onClick={handleLogin}>Sign In</button>
+            <button className="msubmit" onClick={handleLogin} disabled={busy}>
+              {busy ? 'Signing in…' : 'Sign In'}
+            </button>
           </div>
         )}
 
@@ -141,7 +170,7 @@ export default function AuthModal({ isOpen, onClose }) {
         {mode === 'register' && (
           <div className="mform active">
             <GoogleLoginButton
-              onSuccess={() => { window.location.reload(); }}
+              onSuccess={onGoogleSuccess}
               onError={(msg) => setError(msg || 'Google sign-in failed.')}
             />
             <div style={{ display:'flex', alignItems:'center', gap:12, margin:'16px 0' }}>
@@ -185,7 +214,9 @@ export default function AuthModal({ isOpen, onClose }) {
                 placeholder="+91 98765 43210"
               />
             </div>
-            <button className="msubmit" onClick={handleRegister}>Create Account</button>
+            <button className="msubmit" onClick={handleRegister} disabled={busy}>
+              {busy ? 'Creating…' : 'Create Account'}
+            </button>
           </div>
         )}
 
@@ -207,7 +238,9 @@ export default function AuthModal({ isOpen, onClose }) {
                 style={{ fontSize: '22px', letterSpacing: '.35em', textAlign: 'center' }}
               />
             </div>
-            <button className="msubmit" onClick={handleOTP}>Verify Account</button>
+            <button className="msubmit" onClick={handleOTP} disabled={busy}>
+              {busy ? 'Verifying…' : 'Verify Account'}
+            </button>
           </div>
         )}
       </div>

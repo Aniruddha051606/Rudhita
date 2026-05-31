@@ -1,34 +1,19 @@
 // src/components/Header.jsx
-import React, { useState, useEffect } from 'react';
-import { Link }                        from 'react-router-dom';
-import { API, isAuthenticated }        from '../utils/api';
+import React from 'react';
+import { Link } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
 
 /**
  * Site-wide header: announcement bar + primary nav.
  *
- * WHY the loading guard exists:
- *   After Google OAuth the page hard-reloads. isAuthenticated() is true
- *   immediately, but the user profile fetch is async. Without a guard, code
- *   that accesses user.name.split(' ') would throw because user is still null,
- *   producing a white-screen crash. We render a transparent placeholder until
- *   the fetch settles, then swap in the real content.
+ * Auth state now comes from AuthContext, so the "Account / Logout" controls
+ * update the instant login/logout happens — no reload, no stale closure, no
+ * separate /auth/me fetch here (the context already has the profile).
  */
 export default function Header({ onLogout, onOpenAuth, onOpenCart, cartCount }) {
-  const [user,  setUser]  = useState(null);
-  const [ready, setReady] = useState(false);
-  const loggedIn = isAuthenticated();
+  const { user, isLoggedIn, loading } = useAuth();
 
-  useEffect(() => {
-    if (!loggedIn) { setReady(true); return; }
-    let cancelled = false;
-    API.auth.me()
-      .then(data  => { if (!cancelled) setUser(data); })
-      .catch(()   => {})
-      .finally(() => { if (!cancelled) setReady(true); });
-    return () => { cancelled = true; };
-  }, [loggedIn]);
-
-  // Optional-chaining prevents a crash if user or user.name is null/undefined
+  // Optional-chaining prevents a crash if the profile hasn't loaded yet.
   const firstName = user?.name?.split(' ')?.[0] ?? null;
 
   return (
@@ -55,8 +40,10 @@ export default function Header({ onLogout, onOpenAuth, onOpenCart, cartCount }) 
           <Link to="/" className="nav-logo">Rudhita</Link>
 
           <div className="nav-right">
-            {/* Loading guard: invisible placeholder while profile fetch is in-flight */}
-            {!ready ? (
+            {/* While the initial profile probe is in flight AND we're logged in,
+                show an invisible placeholder to avoid a flicker. Once settled,
+                show the real controls. If logged out, show Account immediately. */}
+            {isLoggedIn && loading ? (
               <span
                 className="nav-link"
                 aria-hidden="true"
@@ -64,7 +51,7 @@ export default function Header({ onLogout, onOpenAuth, onOpenCart, cartCount }) 
               >
                 Account
               </span>
-            ) : loggedIn ? (
+            ) : isLoggedIn ? (
               <>
                 <Link to="/account" className="nav-link">
                   {firstName ? `Hi, ${firstName}` : 'Account'}

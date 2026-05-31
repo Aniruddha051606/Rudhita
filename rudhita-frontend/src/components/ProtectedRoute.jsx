@@ -1,28 +1,12 @@
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import { Navigate } from 'react-router-dom';
-import { API } from '../utils/api';
+import { useAuth } from '../context/AuthContext';
 
 export function ProtectedRoute({ children, requiredRole = null }) {
-  const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const { user, isLoggedIn, loading } = useAuth();
 
-  // Read directly from localStorage so the value is always fresh after a
-  // hard reload (e.g. post-Google-OAuth). Never goes stale from a closure.
-  const hasToken = !!localStorage.getItem('rudhita_token');
-
-  useEffect(() => {
-    if (!hasToken) {
-      setLoading(false);
-      return;
-    }
-    API.auth.me()
-      .then(u => setUser(u))
-      .catch(() => setUser(null))
-      .finally(() => setLoading(false));
-  }, []);
-
-  // Show a minimal spinner while the profile fetch is in-flight so the user
-  // sees feedback instead of a blank page.
+  // Wait for the initial /auth/me probe before deciding anything, so we don't
+  // briefly redirect a logged-in user while their profile is still loading.
   if (loading) {
     return (
       <div style={{
@@ -35,13 +19,12 @@ export function ProtectedRoute({ children, requiredRole = null }) {
     );
   }
 
-  // No token at all → redirect. This is the ONLY condition that should kick
-  // the user to /auth. A me() failure alone (network blip, cold start) must
-  // NOT redirect — that would create a loop when the token is valid but the
-  // backend response was slow or temporarily unavailable.
-  if (!hasToken) return <Navigate to="/auth" replace />;
+  // No token → not logged in → go to /auth. This is the ONLY thing that sends
+  // the user to the login page. A failed /auth/me alone (cold start, blip)
+  // does NOT clear the token, so it cannot cause a redirect loop.
+  if (!isLoggedIn) return <Navigate to="/auth" replace />;
 
-  // Admin gate — safe with optional chaining in case me() failed and user is null.
+  // Admin gate — optional chaining is safe if the profile didn't load.
   if (requiredRole === 'admin' && !user?.is_admin) return <Navigate to="/" replace />;
 
   return children;
