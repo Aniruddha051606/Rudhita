@@ -36,20 +36,30 @@ export function clearTokens() {
   localStorage.removeItem(REFRESH_KEY);
 }
 
-// ── Silent refresh (single-flight) ───────────────────────────────────────────
+// ── Silent refresh (single-flight, race-proof) ───────────────────────────────
 let _refreshPromise = null;
+let _lastRefreshAt = 0;
 async function tryRefresh() {
   const rt = localStorage.getItem(REFRESH_KEY);
   if (!rt) return false;
+
+  // If a refresh just succeeded within the last 3s, a 401 now means the token
+  // truly is bad (not a rotation race) — but the just-rotated token is already
+  // stored, so report success and let the caller retry with it once.
+  if (!_refreshPromise && Date.now() - _lastRefreshAt < 3000) {
+    return true;
+  }
+
   if (!_refreshPromise) {
     _refreshPromise = fetch(`${BASE_URL}/auth/refresh`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refresh_token: rt }),
+      // Always read the LATEST stored refresh token at call time.
+      body: JSON.stringify({ refresh_token: localStorage.getItem(REFRESH_KEY) }),
     })
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
-        if (d?.access_token) { setTokens(d); return true; }
+        if (d?.access_token) { setTokens(d); _lastRefreshAt = Date.now(); return true; }
         return false;
       })
       .catch(() => false)
@@ -81,8 +91,16 @@ async function request(endpoint, options = {}) {
 
   if (!response.ok) {
     if (response.status === 401 && !options._retry) {
+      // Serialize on the shared refresh promise. Any number of requests that
+      // 401 at the same time await the SAME refresh — no second refresh fires
+      // with an already-rotated token.
       const refreshed = await tryRefresh();
-      if (refreshed) return request(endpoint, { ...options, _retry: true });
+      if (refreshed) {
+        // Re-read the freshly-stored access token before retrying (the closure's
+        // old token is stale after rotation).
+        return request(endpoint, { ...options, _retry: true });
+      }
+      // Refresh genuinely failed (no refresh token, or backend rejected it).
       clearTokens();
     }
     // FastAPI 422 returns `detail` as an array of {loc,msg,type}; coerce to a
