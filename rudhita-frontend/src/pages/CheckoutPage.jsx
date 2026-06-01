@@ -8,16 +8,10 @@ import { formatINR } from '@/lib/utils';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 
-const RZP_SRC = 'https://checkout.razorpay.com/v1/checkout.js';
-function loadRazorpay() {
-  return new Promise((resolve, reject) => {
-    if (window.Razorpay) return resolve(true);
-    const existing = document.querySelector(`script[src="${RZP_SRC}"]`);
-    if (existing) { existing.addEventListener('load', () => resolve(true)); existing.addEventListener('error', () => reject(new Error('Failed to load Razorpay.'))); return; }
-    const s = document.createElement('script');
-    s.src = RZP_SRC; s.onload = () => resolve(true); s.onerror = () => reject(new Error('Failed to load Razorpay.'));
-    document.body.appendChild(s);
-  });
+// Cashfree JS SDK v3 is loaded globally in index.html (window.Cashfree).
+function getCashfree(mode) {
+  if (typeof window.Cashfree !== 'function') return null;
+  return window.Cashfree({ mode }); // mode: 'sandbox' | 'production'
 }
 
 const FIELDS = [
@@ -57,44 +51,45 @@ export default function CheckoutPage() {
     setErr('');
     setBusy(true);
     try {
-      await loadRazorpay();
-      // 1. Create the order on the backend (it computes the authoritative amount)
+      // 1. Create the order on the backend (it computes the authoritative amount
+      //    and creates the Cashfree order, returning a payment_session_id).
       const order = await API.orders.create({
         address: addr,
         shipping_method: shippingMethod,
-        payment_method: 'razorpay',
+        payment_method: 'cashfree',
       });
 
-      // 2. Open Razorpay with the backend-provided order id + amount + key
-      const options = {
-        key: order.key_id,
-        amount: Math.round(order.amount * 100),
-        currency: order.currency || 'INR',
-        name: 'Rudhita',
-        description: `Order #${order.order_id}`,
-        order_id: order.razorpay_order_id,
-        prefill: { name: addr.name, contact: addr.phone, email: user?.email || '' },
-        theme: { color: '#E8472A' },
-        handler: async (resp) => {
-          try {
-            // 3. Verify the signature server-side
-            await API.orders.confirmPayment(order.order_id, {
-              razorpay_order_id: resp.razorpay_order_id,
-              razorpay_payment_id: resp.razorpay_payment_id,
-              razorpay_signature: resp.razorpay_signature,
-            });
-            await clearCart();
-            navigate(`/order-confirmation?order=${order.order_id}`);
-          } catch (e) {
-            setErr(e.message || 'Payment verification failed. If you were charged, contact support.');
-            setBusy(false);
-          }
-        },
-        modal: { ondismiss: () => setBusy(false) },
-      };
-      const rzp = new window.Razorpay(options);
-      rzp.on('payment.failed', (r) => { setErr(r.error?.description || 'Payment failed.'); setBusy(false); });
-      rzp.open();
+      if (!order.payment_session_id) {
+        throw new Error('Could not start payment session. Please try again.');
+      }
+
+      const cashfree = getCashfree(order.env === 'production' ? 'production' : 'sandbox');
+      if (!cashfree) throw new Error('Payment SDK failed to load. Please refresh and try again.');
+
+      // 2. Open Cashfree checkout in a modal (stays on our page).
+      const result = await cashfree.checkout({
+        paymentSessionId: order.payment_session_id,
+        redirectTarget: '_modal',
+      });
+
+      // If the modal flow returned an error object, surface it.
+      if (result && result.error) {
+        setErr(result.error.message || 'Payment was not completed.');
+        setBusy(false);
+        return;
+      }
+
+      // 3. Verify server-side (Cashfree is the source of truth — we ask our
+      //    backend, which asks Cashfree, never trusting the browser).
+      const verify = await API.orders.verifyPayment(order.order_id);
+      if (verify.status === 'success') {
+        await clearCart();
+        navigate(`/order-confirmation?order=${order.order_id}`);
+      } else {
+        // Payment may still be processing; the webhook will reconcile it.
+        setErr('Payment is being confirmed. Check your orders in a moment — you’ll get an email once it’s done.');
+        setBusy(false);
+      }
     } catch (e) {
       setErr(e.message || 'Could not start checkout.');
       setBusy(false);
@@ -169,7 +164,7 @@ export default function CheckoutPage() {
             <Button variant="punch" size="lg" className="w-full mt-6" disabled={busy} onClick={placeOrder}>
               {busy ? 'Processing…' : `Pay ${formatINR(total)}`}
             </Button>
-            <p className="font-mono text-[11px] text-muted text-center mt-3">Secured by Razorpay.</p>
+            <p className="font-mono text-[11px] text-muted text-center mt-3">Secured by Cashfree.</p>
           </div>
         </div>
       </div>

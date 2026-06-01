@@ -13,7 +13,14 @@ import { generateInvoice } from '@/lib/invoice';
 import { CustomersPanel, InventoryPanel, ActivityPanel } from '@/components/admin/AdminPanels';
 import AnalyticsPanel from '@/components/admin/AnalyticsPanel';
 
-const STATUS_OPTIONS = ['pending', 'processing', 'shipped', 'out for delivery', 'delivered'];
+const STATUS_OPTIONS = [
+  { value: 'Pending',          label: 'Pending' },
+  { value: 'Processing',       label: 'Processing' },
+  { value: 'Shipped',          label: 'Shipped' },
+  { value: 'Out for Delivery', label: 'Out for Delivery' },
+  { value: 'Delivered',        label: 'Delivered' },
+  { value: 'Cancelled',        label: 'Cancelled' },
+];
 
 function StatCard({ icon: Icon, label, value, accent }) {
   return (
@@ -103,12 +110,20 @@ export default function AdminDashboardPage() {
   };
 
   const changeStatus = async (orderId, status) => {
+    const prev = orders.find((o) => o.id === orderId)?.shipping_status;
     setSavingId(orderId);
+    // optimistic
+    setOrders((p) => p.map((o) => (o.id === orderId ? { ...o, shipping_status: status } : o)));
     try {
       await API.admin.updateOrderStatus(orderId, status);
-      setOrders((prev) => prev.map((o) => (o.id === orderId ? { ...o, shipping_status: status } : o)));
-    } catch (e) { alert(e.message || 'Failed to update status.'); }
-    finally { setSavingId(null); }
+    } catch (e) {
+      // revert on failure + show a readable message (FastAPI 422 detail can be an array)
+      setOrders((p) => p.map((o) => (o.id === orderId ? { ...o, shipping_status: prev } : o)));
+      const msg = typeof e?.message === 'string' ? e.message
+        : Array.isArray(e?.data?.detail) ? e.data.detail.map((d) => d.msg).join(', ')
+        : 'Failed to update status.';
+      alert(msg);
+    } finally { setSavingId(null); }
   };
 
   // Order filtering + search
@@ -119,7 +134,7 @@ export default function AdminDashboardPage() {
     const q = orderSearch.trim().toLowerCase();
     return orders.filter((o) => {
       if (fPayment && (o.payment_status || '').toLowerCase() !== fPayment) return false;
-      if (fShipping && (o.shipping_status || '').toLowerCase() !== fShipping) return false;
+      if (fShipping && (o.shipping_status || '').toLowerCase() !== fShipping.toLowerCase()) return false;
       if (q) {
         const hay = `${o.id} ${o.customer_name || ''} ${o.customer_email || ''}`.toLowerCase();
         if (!hay.includes(q)) return false;
@@ -227,7 +242,7 @@ export default function AdminDashboardPage() {
               <select value={fShipping} onChange={(e) => setFShipping(e.target.value)}
                 className="h-10 border-2 border-ink bg-paper px-3 font-sans text-sm focus:outline-none focus:shadow-brutalPunch">
                 <option value="">All shipping</option>
-                {STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
+                {STATUS_OPTIONS.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
               </select>
               {selectedOrders.length > 0 && (
                 <Button variant="punch" size="sm" disabled={bulkBusy} onClick={bulkFulfill}>
@@ -268,12 +283,12 @@ export default function AdminDashboardPage() {
                     <td className="px-4 py-3"><Badge variant={o.payment_status === 'Paid' ? 'punch' : 'muted'}>{o.payment_status}</Badge></td>
                     <td className="px-4 py-3">
                       <select
-                        value={(o.shipping_status || 'pending').toLowerCase()}
+                        value={o.shipping_status || 'Pending'}
                         disabled={savingId === o.id}
                         onChange={(e) => changeStatus(o.id, e.target.value)}
                         className="border-2 border-ink bg-paper px-2 py-1 font-sans text-sm focus:outline-none focus:shadow-brutalPunch"
                       >
-                        {STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
+                        {STATUS_OPTIONS.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
                       </select>
                     </td>
                     <td className="px-4 py-3">

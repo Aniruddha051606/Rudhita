@@ -85,7 +85,15 @@ async function request(endpoint, options = {}) {
       if (refreshed) return request(endpoint, { ...options, _retry: true });
       clearTokens();
     }
-    throw new APIError(data.detail || data.message || 'Something went wrong', response.status, data);
+    // FastAPI 422 returns `detail` as an array of {loc,msg,type}; coerce to a
+    // readable string so callers never surface "[object Object]".
+    let message = data.detail ?? data.message ?? 'Something went wrong';
+    if (Array.isArray(message)) {
+      message = message.map((d) => (typeof d === 'string' ? d : d.msg || JSON.stringify(d))).join(', ');
+    } else if (typeof message === 'object') {
+      message = message.msg || JSON.stringify(message);
+    }
+    throw new APIError(message, response.status, data);
   }
   return data;
 }
@@ -137,8 +145,8 @@ export const API = {
     list: () => request('/orders/'),
     get: (id) => request(`/orders/${id}`),
     create: (payload) => request('/orders/', { method: 'POST', body: JSON.stringify(payload) }),
-    confirmPayment: (orderId, payload) =>
-      request(`/orders/${orderId}/confirm-payment`, { method: 'POST', body: JSON.stringify(payload) }),
+    verifyPayment: (orderId) =>
+      request(`/orders/${orderId}/verify-payment`, { method: 'POST', body: JSON.stringify({}) }),
     track: (id) => request(`/orders/${id}/track`),
   },
   admin: {
@@ -150,7 +158,7 @@ export const API = {
     order: (id) => request(`/admin/orders/${id}`),
     products: () => request('/admin/products'),
     updateOrderStatus: (id, status, extra = {}) =>
-      request(`/admin/orders/${id}/status`, { method: 'PATCH', body: JSON.stringify({ shipping_status: status, ...extra }) }),
+      request(`/admin/orders/${id}/status`, { method: 'PATCH', body: JSON.stringify({ status, ...extra }) }),
     fulfillOrder: (id, payload) =>
       request(`/admin/orders/${id}/fulfill`, { method: 'POST', body: JSON.stringify(payload) }),
     bulkFulfill: (orderIds) =>
