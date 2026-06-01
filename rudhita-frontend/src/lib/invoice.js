@@ -1,6 +1,6 @@
 // src/lib/invoice.js
 // Generates a print-ready HTML invoice in a new window. The browser's
-// "Save as PDF" in the print dialog produces a downloadable PDF — no backend
+// "Save as PDF" in the print dialog produces a downloadable PDF â€” no backend
 // or library needed. (A backend PDF endpoint with sequential invoice numbers
 // can be added later for official/GST invoices.)
 

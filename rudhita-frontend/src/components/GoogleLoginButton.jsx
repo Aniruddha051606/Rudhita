@@ -5,7 +5,7 @@ import { API } from '@/api/client';
 import { Spinner } from '@/components/ui/Spinner';
 
 // Exchanges the Google id_token for Rudhita tokens, then hands them to onSuccess.
-// Does NOT store tokens or touch app state — the AuthContext owns that.
+// Does NOT store tokens or touch app state â€” the AuthContext owns that.
 export default function GoogleLoginButton({ onSuccess, onError }) {
   const [loading, setLoading] = useState(false);
 

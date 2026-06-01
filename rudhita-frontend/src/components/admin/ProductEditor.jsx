@@ -112,9 +112,9 @@ export default function ProductEditor({ product, onClose, onSaved }) {
               <div className="flex-1 grid gap-2">
                 <input ref={fileRef} type="file" accept="image/*" onChange={onPickFile} className="hidden" id="prod-img" />
                 <Button type="button" variant="outline" size="sm" disabled={uploading} onClick={() => fileRef.current?.click()}>
-                  {uploading ? <><Loader2 size={16} className="animate-spin" /> Uploading…</> : <><Upload size={16} /> Upload image</>}
+                  {uploading ? <><Loader2 size={16} className="animate-spin" /> Uploadingâ€¦</> : <><Upload size={16} /> Upload image</>}
                 </Button>
-                <Input placeholder="…or paste an image URL" value={form.image_url} onChange={set('image_url')} />
+                <Input placeholder="â€¦or paste an image URL" value={form.image_url} onChange={set('image_url')} />
               </div>
             </div>
           </div>
@@ -124,7 +124,7 @@ export default function ProductEditor({ product, onClose, onSaved }) {
           <div>
             <p className="eyebrow mb-1.5">Description</p>
             <textarea value={form.description} onChange={set('description')} rows={3}
-              placeholder="Describe the piece…"
+              placeholder="Describe the pieceâ€¦"
               className="w-full bg-paper border-2 border-ink px-4 py-3 font-sans text-[15px] focus:outline-none focus:shadow-brutalPunch transition-shadow resize-none" />
           </div>
 
@@ -134,8 +134,8 @@ export default function ProductEditor({ product, onClose, onSaved }) {
           </div>
 
           <div className="grid sm:grid-cols-3 gap-4">
-            <Input label="Price (₹)" type="number" min="0" step="0.01" value={form.price} onChange={set('price')} placeholder="0.00" />
-            <Input label="Original Price (₹)" type="number" min="0" step="0.01" value={form.original_price} onChange={set('original_price')} placeholder="optional" />
+            <Input label="Price (â‚¹)" type="number" min="0" step="0.01" value={form.price} onChange={set('price')} placeholder="0.00" />
+            <Input label="Original Price (â‚¹)" type="number" min="0" step="0.01" value={form.original_price} onChange={set('original_price')} placeholder="optional" />
             <Input label="Weight (g)" type="number" min="0" value={form.weight_grams} onChange={set('weight_grams')} placeholder="0" />
           </div>
         </div>
@@ -143,7 +143,7 @@ export default function ProductEditor({ product, onClose, onSaved }) {
         <div className="flex gap-3 justify-end border-t-2 border-ink px-6 py-4">
           <Button variant="ghost" onClick={onClose} disabled={busy}>Cancel</Button>
           <Button variant="punch" onClick={save} disabled={busy || uploading}>
-            {busy ? 'Saving…' : editing ? 'Save changes' : 'Create product'}
+            {busy ? 'Savingâ€¦' : editing ? 'Save changes' : 'Create product'}
           </Button>
         </div>
       </div>

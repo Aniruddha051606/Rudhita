@@ -22,7 +22,7 @@ export default function HomePage() {
     <div className="grain">
       {/* Hero */}
       <section className="max-w-7xl mx-auto px-5 pt-16 pb-24 relative">
-        <p className="eyebrow text-punch mb-6 animate-fade-up">Crafted Luxury · Est. 2026</p>
+        <p className="eyebrow text-punch mb-6 animate-fade-up">Crafted Luxury Â· Est. 2026</p>
         <h1 className="h-display text-6xl md:text-8xl max-w-4xl animate-fade-up" style={{ animationDelay: '60ms' }}>
           Objects with<br /><span className="text-punch">intention.</span><br />Built to last.
         </h1>
@@ -77,7 +77,7 @@ export default function HomePage() {
       <section id="philosophy" className="border-t-2 border-ink bg-sand">
         <div className="max-w-3xl mx-auto px-5 py-24 text-center">
           <p className="eyebrow text-punch mb-4">Our Philosophy</p>
-          <h2 className="h-display text-4xl md:text-5xl mb-6">Less, but better — and made to stay.</h2>
+          <h2 className="h-display text-4xl md:text-5xl mb-6">Less, but better â€” and made to stay.</h2>
           <p className="text-muted text-lg leading-relaxed">
             Rudhita exists to push back against disposability. Every piece is designed to be repaired,
             not replaced; to age well, not wear out. We work with a small circle of artisans and pay them fairly.

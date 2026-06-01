@@ -48,11 +48,11 @@ export default function UserAccountPage() {
       <div className="border-2 border-ink p-6 mb-10 grid sm:grid-cols-3 gap-6">
         <div>
           <p className="eyebrow mb-1">Name</p>
-          <p className="font-sans font-semibold">{user?.name || '—'}</p>
+          <p className="font-sans font-semibold">{user?.name || 'â€”'}</p>
         </div>
         <div>
           <p className="eyebrow mb-1">Email</p>
-          <p className="font-sans font-semibold break-all">{user?.email || '—'}</p>
+          <p className="font-sans font-semibold break-all">{user?.email || 'â€”'}</p>
         </div>
         <div>
           <p className="eyebrow mb-1">Phone</p>
@@ -63,7 +63,7 @@ export default function UserAccountPage() {
       {/* Orders */}
       <h2 className="font-display text-2xl font-semibold mb-5">Order History</h2>
       {loading ? (
-        <div className="flex items-center gap-3 text-muted py-12 justify-center"><Spinner /> <span className="font-mono text-sm">Loading orders…</span></div>
+        <div className="flex items-center gap-3 text-muted py-12 justify-center"><Spinner /> <span className="font-mono text-sm">Loading ordersâ€¦</span></div>
       ) : orders.length === 0 ? (
         <div className="border-2 border-ink p-12 text-center">
           <Package size={32} className="mx-auto mb-4 text-line" />
@@ -77,7 +77,7 @@ export default function UserAccountPage() {
               <div>
                 <p className="font-display font-semibold">Order #{o.id}</p>
                 <p className="font-mono text-xs text-muted">
-                  {new Date(o.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })} · {o.item_count} item{o.item_count !== 1 ? 's' : ''}
+                  {new Date(o.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })} Â· {o.item_count} item{o.item_count !== 1 ? 's' : ''}
                 </p>
               </div>
               <div className="flex items-center gap-4">

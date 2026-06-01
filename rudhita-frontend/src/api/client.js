@@ -145,8 +145,8 @@ export const API = {
     list: () => request('/orders/'),
     get: (id) => request(`/orders/${id}`),
     create: (payload) => request('/orders/', { method: 'POST', body: JSON.stringify(payload) }),
-    verifyPayment: (orderId) =>
-      request(`/orders/${orderId}/verify-payment`, { method: 'POST', body: JSON.stringify({}) }),
+    confirmPayment: (orderId, payload) =>
+      request(`/orders/${orderId}/confirm-payment`, { method: 'POST', body: JSON.stringify(payload) }),
     track: (id) => request(`/orders/${id}/track`),
   },
   admin: {

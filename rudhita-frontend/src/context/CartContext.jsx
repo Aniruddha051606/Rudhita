@@ -11,7 +11,7 @@ export function CartProvider({ children }) {
   const [open, setOpen]     = useState(false);
   const [loading, setLoad]  = useState(false);
 
-  // Derived totals (recomputed from items — server cart_total is authoritative
+  // Derived totals (recomputed from items â€” server cart_total is authoritative
   // at checkout, but for display we compute from the line items we hold).
   const count    = items.reduce((n, i) => n + i.quantity, 0);
   const subtotal = items.reduce((n, i) => n + Number(i.product?.price || 0) * i.quantity, 0);

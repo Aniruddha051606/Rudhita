@@ -72,7 +72,7 @@ export function AuthPage() {
           <h1 className="h-display text-5xl mb-6">Pieces made<br />to outlast<br />the moment.</h1>
           <p className="text-paper/70 max-w-sm">Sign in to track orders, save favourites, and check out faster.</p>
         </div>
-        <p className="font-mono text-[11px] text-paper/40 relative z-10">© 2026 Rudhita</p>
+        <p className="font-mono text-[11px] text-paper/40 relative z-10">Â© 2026 Rudhita</p>
       </div>
 
       {/* Right: form */}
@@ -101,8 +101,8 @@ export function AuthPage() {
               <GoogleLoginButton onSuccess={onGoogle} onError={setMsg} />
               <div className="flex items-center gap-3 my-1"><span className="flex-1 h-0.5 bg-line" /><span className="eyebrow">or</span><span className="flex-1 h-0.5 bg-line" /></div>
               <Input label="Email" type="email" value={form.email} onChange={set('email')} placeholder="your@email.com" />
-              <Input label="Password" type="password" value={form.password} onChange={set('password')} placeholder="••••••••" onKeyDown={(e) => e.key === 'Enter' && doLogin()} />
-              <Button onClick={doLogin} disabled={busy} size="lg" className="mt-1">{busy ? 'Signing in…' : 'Sign In'}</Button>
+              <Input label="Password" type="password" value={form.password} onChange={set('password')} placeholder="â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢" onKeyDown={(e) => e.key === 'Enter' && doLogin()} />
+              <Button onClick={doLogin} disabled={busy} size="lg" className="mt-1">{busy ? 'Signing inâ€¦' : 'Sign In'}</Button>
             </div>
           )}
 
@@ -113,9 +113,9 @@ export function AuthPage() {
               <Input label="Full Name" value={form.name} onChange={set('name')} placeholder="Your name" />
               <Input label="Email" type="email" value={form.email} onChange={set('email')} placeholder="your@email.com" />
               <Input label="Phone" type="tel" value={form.phone} onChange={set('phone')} placeholder="+91 98765 43210" />
-              <Input label="Password" type="password" value={form.password} onChange={set('password')} placeholder="••••••••" />
-              <Input label="Confirm Password" type="password" value={form.confirm} onChange={set('confirm')} placeholder="••••••••" />
-              <Button onClick={doRegister} disabled={busy} size="lg" className="mt-1">{busy ? 'Creating…' : 'Create Account'}</Button>
+              <Input label="Password" type="password" value={form.password} onChange={set('password')} placeholder="â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢" />
+              <Input label="Confirm Password" type="password" value={form.confirm} onChange={set('confirm')} placeholder="â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢" />
+              <Button onClick={doRegister} disabled={busy} size="lg" className="mt-1">{busy ? 'Creatingâ€¦' : 'Create Account'}</Button>
             </div>
           )}
 
@@ -123,8 +123,8 @@ export function AuthPage() {
             <div className="flex flex-col gap-4">
               <p className="text-sm text-muted">We sent a 6-digit code to <strong className="text-ink">{form.email}</strong>.</p>
               <Input label="Verification Code" value={otp} maxLength={6} onChange={(e) => setOtp(e.target.value)} placeholder="000000" className="text-center text-2xl tracking-[0.4em] font-mono" />
-              <Button onClick={doOTP} disabled={busy} size="lg">{busy ? 'Verifying…' : 'Verify Account'}</Button>
-              <button onClick={() => setTab('login')} className="font-mono text-xs text-muted hover:text-punch">← Back to sign in</button>
+              <Button onClick={doOTP} disabled={busy} size="lg">{busy ? 'Verifyingâ€¦' : 'Verify Account'}</Button>
+              <button onClick={() => setTab('login')} className="font-mono text-xs text-muted hover:text-punch">â† Back to sign in</button>
             </div>
           )}
         </div>

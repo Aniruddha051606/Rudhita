@@ -25,7 +25,7 @@ const AdminDashboardPage    = lazy(() => import('@/pages/AdminDashboardPage'));
 
 const PageFallback = () => (
   <div className="flex items-center justify-center min-h-[60vh] gap-3 text-muted">
-    <Spinner /> <span className="font-mono text-sm">Loading…</span>
+    <Spinner /> <span className="font-mono text-sm">Loadingâ€¦</span>
   </div>
 );
 
@@ -46,7 +46,7 @@ function Shell({ children, onOpenAuth, onLogout, onOpenCart, cartCount }) {
       <main className="relative z-[2] min-h-[60vh]">{children}</main>
       <footer className="border-t-2 border-ink mt-24">
         <div className="max-w-7xl mx-auto px-5 py-10 flex flex-col sm:flex-row items-center justify-between gap-4">
-          <p className="font-mono text-xs text-muted">© 2026 Rudhita. All rights reserved.</p>
+          <p className="font-mono text-xs text-muted">Â© 2026 Rudhita. All rights reserved.</p>
           <div className="flex gap-6 font-sans text-sm">
             <a href="#" className="hover:text-punch">Privacy</a>
             <a href="#" className="hover:text-punch">Terms</a>

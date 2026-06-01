@@ -78,7 +78,7 @@ export default function ProductCatalogPage() {
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search pieces…"
+            placeholder="Search piecesâ€¦"
             className="h-12 w-full bg-paper border-2 border-ink pl-10 pr-4 font-sans text-[15px] focus:outline-none focus:shadow-brutalPunch transition-shadow"
           />
         </form>
@@ -106,7 +106,7 @@ export default function ProductCatalogPage() {
             <option value="newest">Newest</option>
             <option value="price-low">Price: Low to High</option>
             <option value="price-high">Price: High to Low</option>
-            <option value="name">Name A–Z</option>
+            <option value="name">Name Aâ€“Z</option>
           </select>
         </div>
       </div>
@@ -116,11 +116,11 @@ export default function ProductCatalogPage() {
 
       {/* Grid */}
       {loading && products.length === 0 ? (
-        <div className="flex items-center justify-center py-32 gap-3 text-muted"><Spinner /> <span className="font-mono text-sm">Loading…</span></div>
+        <div className="flex items-center justify-center py-32 gap-3 text-muted"><Spinner /> <span className="font-mono text-sm">Loadingâ€¦</span></div>
       ) : products.length === 0 ? (
         <div className="text-center py-32">
           <p className="font-display text-2xl mb-2">Nothing here yet.</p>
-          <p className="text-muted">{query ? `No results for “${query}”.` : 'Check back soon.'}</p>
+          <p className="text-muted">{query ? `No results for â€œ${query}â€.` : 'Check back soon.'}</p>
         </div>
       ) : (
         <>
@@ -130,7 +130,7 @@ export default function ProductCatalogPage() {
           {hasMore && (
             <div className="flex justify-center mt-12">
               <Button variant="outline" size="lg" disabled={loading} onClick={() => setSkip(skip + PAGE)}>
-                {loading ? 'Loading…' : 'Load more'}
+                {loading ? 'Loadingâ€¦' : 'Load more'}
               </Button>
             </div>
           )}

@@ -41,7 +41,7 @@
     @apply font-display font-semibold tracking-tight leading-[0.95];
   }
 
-  /* Eyebrow label — small uppercase mono tag */
+  /* Eyebrow label â€” small uppercase mono tag */
   .eyebrow {
     @apply font-mono text-[11px] uppercase tracking-[0.2em] text-muted;
   }
@@ -57,7 +57,7 @@
     background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
   }
 
-  /* ── Skeleton loading shimmer ─────────────────────────────────────────── */
+  /* â”€â”€ Skeleton loading shimmer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
   .skeleton {
     position: relative;
     overflow: hidden;
@@ -74,7 +74,7 @@
   }
   @keyframes shimmer { 100% { transform: translateX(100%); } }
 
-  /* ── Staggered reveal on mount ────────────────────────────────────────── */
+  /* â”€â”€ Staggered reveal on mount â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
   .reveal { animation: reveal-up 0.55s cubic-bezier(0.16, 1, 0.3, 1) both; }
   @keyframes reveal-up {
     from { opacity: 0; transform: translateY(14px); }
@@ -93,7 +93,7 @@
     outline-offset: 2px;
   }
 
-  /* Respect users who prefer reduced motion — disable all animation/transition */
+  /* Respect users who prefer reduced motion â€” disable all animation/transition */
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after {
       animation-duration: 0.001ms !important;

@@ -6,13 +6,13 @@ import { Badge } from '@/components/ui/Badge';
 import { Spinner } from '@/components/ui/Spinner';
 
 const Loading = () => (
-  <div className="flex items-center justify-center py-20 gap-3 text-muted"><Spinner /> <span className="font-mono text-sm">Loading…</span></div>
+  <div className="flex items-center justify-center py-20 gap-3 text-muted"><Spinner /> <span className="font-mono text-sm">Loadingâ€¦</span></div>
 );
 
-const fmtDate = (s) => (s ? new Date(s).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '—');
-const fmtTime = (s) => (s ? new Date(s).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—');
+const fmtDate = (s) => (s ? new Date(s).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : 'â€”');
+const fmtTime = (s) => (s ? new Date(s).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : 'â€”');
 
-/* ── CUSTOMERS ─────────────────────────────────────────────────────────── */
+/* â”€â”€ CUSTOMERS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 export function CustomersPanel() {
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -48,7 +48,7 @@ export function CustomersPanel() {
               <td className="px-4 py-3 text-right">
                 {u.is_admin
                   ? <Badge variant="punch"><ShieldCheck size={11} className="mr-1" /> Admin</Badge>
-                  : <button onClick={() => promote(u)} disabled={busyId === u.id} className="px-3 py-1.5 border-2 border-ink text-xs font-semibold hover:bg-ink hover:text-paper transition-colors">{busyId === u.id ? '…' : 'Make admin'}</button>}
+                  : <button onClick={() => promote(u)} disabled={busyId === u.id} className="px-3 py-1.5 border-2 border-ink text-xs font-semibold hover:bg-ink hover:text-paper transition-colors">{busyId === u.id ? 'â€¦' : 'Make admin'}</button>}
               </td>
             </tr>
           ))}
@@ -58,7 +58,7 @@ export function CustomersPanel() {
   );
 }
 
-/* ── INVENTORY ─────────────────────────────────────────────────────────── */
+/* â”€â”€ INVENTORY â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 export function InventoryPanel() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -90,7 +90,7 @@ export function InventoryPanel() {
   );
 }
 
-/* ── ACTIVITY (audit log) ──────────────────────────────────────────────── */
+/* â”€â”€ ACTIVITY (audit log) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 export function ActivityPanel() {
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -111,7 +111,7 @@ export function ActivityPanel() {
               <div className="flex-1 min-w-0">
                 <p className="font-sans text-sm">
                   <span className="font-semibold capitalize">{label(l.action)}</span>
-                  {l.target_type && <span className="text-muted"> · {l.target_type}{l.target_id ? ` #${l.target_id}` : ''}</span>}
+                  {l.target_type && <span className="text-muted"> Â· {l.target_type}{l.target_id ? ` #${l.target_id}` : ''}</span>}
                 </p>
                 {l.detail && <p className="font-mono text-[11px] text-muted truncate">{typeof l.detail === 'string' ? l.detail : JSON.stringify(l.detail)}</p>}
               </div>

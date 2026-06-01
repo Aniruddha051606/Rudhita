@@ -71,11 +71,11 @@ export default function ProductDetailPage({ onRequireAuth }) {
     }
   };
 
-  if (loading) return <div className="flex items-center justify-center min-h-[60vh] gap-3 text-muted"><Spinner /> <span className="font-mono text-sm">Loading…</span></div>;
+  if (loading) return <div className="flex items-center justify-center min-h-[60vh] gap-3 text-muted"><Spinner /> <span className="font-mono text-sm">Loadingâ€¦</span></div>;
   if (err && !product) return (
     <div className="max-w-7xl mx-auto px-5 py-32 text-center">
       <p className="font-display text-3xl mb-4">{err}</p>
-      <Link to="/products"><Button variant="outline">← Back to shop</Button></Link>
+      <Link to="/products"><Button variant="outline">â† Back to shop</Button></Link>
     </div>
   );
 
@@ -92,7 +92,7 @@ export default function ProductDetailPage({ onRequireAuth }) {
             ? <img src={product.image_url} alt={product.name} className="w-full h-full object-cover" />
             : <div className="w-full h-full flex items-center justify-center font-display text-7xl text-line">R</div>}
           <div className="absolute top-4 left-4 flex flex-col gap-2">
-            {product.discount_percent > 0 && <Badge variant="punch">−{product.discount_percent}% off</Badge>}
+            {product.discount_percent > 0 && <Badge variant="punch">âˆ’{product.discount_percent}% off</Badge>}
             {out && <Badge>Sold out</Badge>}
           </div>
         </div>
@@ -129,7 +129,7 @@ export default function ProductDetailPage({ onRequireAuth }) {
                 <button onClick={() => setQty((q) => Math.min(maxQty, q + 1))} className="w-11 h-11 flex items-center justify-center hover:bg-sand" aria-label="Increase"><Plus size={16} /></button>
               </div>
               <Button onClick={handleAdd} disabled={adding} variant={added ? 'punch' : 'primary'} size="lg" className="flex-1">
-                {adding ? <Spinner className="text-paper" /> : added ? 'Added ✓' : 'Add to cart'}
+                {adding ? <Spinner className="text-paper" /> : added ? 'Added âœ“' : 'Add to cart'}
               </Button>
               <button
                 onClick={toggleWishlist}
@@ -144,7 +144,7 @@ export default function ProductDetailPage({ onRequireAuth }) {
 
           {/* Assurances */}
           <div className="grid grid-cols-3 gap-3 mt-6 pt-6 border-t-2 border-line">
-            {[[ShieldCheck, 'Lifetime repair'], [Truck, 'Free over ₹3,000'], [RefreshCw, '14-day returns']].map(([Icon, label], i) => (
+            {[[ShieldCheck, 'Lifetime repair'], [Truck, 'Free over â‚¹3,000'], [RefreshCw, '14-day returns']].map(([Icon, label], i) => (
               <div key={i} className="flex flex-col items-center text-center gap-2">
                 <Icon size={20} className="text-punch" />
                 <span className="font-mono text-[10px] uppercase tracking-wider text-muted leading-tight">{label}</span>

@@ -10,7 +10,7 @@ export default function ProtectedRoute({ children, requiredRole = null }) {
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-[60vh] gap-3 text-muted">
-        <Spinner /> <span className="font-mono text-sm">Loading…</span>
+        <Spinner /> <span className="font-mono text-sm">Loadingâ€¦</span>
       </div>
     );
   }

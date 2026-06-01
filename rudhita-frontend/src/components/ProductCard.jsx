@@ -48,7 +48,7 @@ export default function ProductCard({ product, onAdd }) {
 
         {/* Badges */}
         <div className="absolute top-3 left-3 flex flex-col gap-1.5">
-          {product.discount_percent > 0 && <Badge variant="punch">−{product.discount_percent}%</Badge>}
+          {product.discount_percent > 0 && <Badge variant="punch">âˆ’{product.discount_percent}%</Badge>}
           {out && <Badge variant="default">Sold out</Badge>}
           {low && <Badge variant="outline">Only {product.stock_quantity} left</Badge>}
         </div>

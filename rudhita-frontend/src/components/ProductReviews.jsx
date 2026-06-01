@@ -81,7 +81,7 @@ export default function ProductReviews({ productId, onRequireAuth }) {
       <h2 className="font-display text-3xl font-semibold mb-8">Reviews</h2>
 
       {loading ? (
-        <div className="flex items-center gap-3 text-muted py-8"><Spinner /> <span className="font-mono text-sm">Loading reviews…</span></div>
+        <div className="flex items-center gap-3 text-muted py-8"><Spinner /> <span className="font-mono text-sm">Loading reviewsâ€¦</span></div>
       ) : (
         <div className="grid lg:grid-cols-3 gap-12">
           {/* Summary + form */}
@@ -115,15 +115,15 @@ export default function ProductReviews({ productId, onRequireAuth }) {
             {/* Compose */}
             <div className="border-2 border-ink p-6">
               <p className="eyebrow mb-3">Write a review</p>
-              {done && <div className="border-2 border-success bg-success/5 px-3 py-2 font-mono text-xs text-success mb-3">Thanks — your review is posted.</div>}
+              {done && <div className="border-2 border-success bg-success/5 px-3 py-2 font-mono text-xs text-success mb-3">Thanks â€” your review is posted.</div>}
               {err && <div className="border-2 border-destructive bg-destructive/5 px-3 py-2 font-mono text-xs text-destructive mb-3">{err}</div>}
               <div className="mb-3"><Stars value={rating} size={24} onSelect={setRating} /></div>
               <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Title (optional)"
                 className="w-full bg-paper border-2 border-ink px-3 h-10 font-sans text-sm mb-3 focus:outline-none focus:shadow-brutalPunch" />
-              <textarea value={body} onChange={(e) => setBody(e.target.value)} rows={3} placeholder="Share your thoughts…"
+              <textarea value={body} onChange={(e) => setBody(e.target.value)} rows={3} placeholder="Share your thoughtsâ€¦"
                 className="w-full bg-paper border-2 border-ink px-3 py-2 font-sans text-sm mb-3 resize-none focus:outline-none focus:shadow-brutalPunch" />
               <Button variant="primary" className="w-full" disabled={busy} onClick={submit}>
-                {busy ? 'Posting…' : loggedIn ? 'Post review' : 'Sign in to review'}
+                {busy ? 'Postingâ€¦' : loggedIn ? 'Post review' : 'Sign in to review'}
               </Button>
             </div>
           </div>
@@ -143,7 +143,7 @@ export default function ProductReviews({ productId, onRequireAuth }) {
                         </div>
                         <div>
                           <p className="font-sans font-semibold text-sm leading-tight">{rv.author_name || 'Anonymous'}</p>
-                          {rv.is_verified && <span className="font-mono text-[10px] uppercase tracking-wider text-success">✓ Verified purchase</span>}
+                          {rv.is_verified && <span className="font-mono text-[10px] uppercase tracking-wider text-success">âœ“ Verified purchase</span>}
                         </div>
                       </div>
                       <Stars value={rv.rating} size={14} />

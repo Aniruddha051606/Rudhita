@@ -5,7 +5,7 @@ import { API } from '@/api/client';
 import { formatINR } from '@/lib/utils';
 import { Spinner } from '@/components/ui/Spinner';
 
-// Lightweight inline SVG charts — no charting library, keeps the bundle small.
+// Lightweight inline SVG charts â€” no charting library, keeps the bundle small.
 function RevenueChart({ series }) {
   if (!series || series.length === 0) return <p className="text-muted text-sm py-8 text-center">No sales in this period.</p>;
   const W = 720, H = 180, P = 8;
@@ -43,7 +43,7 @@ export default function AnalyticsPanel() {
     API.admin.analytics(days).then(setData).catch(() => setData(null)).finally(() => setLoading(false));
   }, [days]);
 
-  if (loading) return <div className="flex items-center justify-center py-20 gap-3 text-muted"><Spinner /> <span className="font-mono text-sm">Loading analytics…</span></div>;
+  if (loading) return <div className="flex items-center justify-center py-20 gap-3 text-muted"><Spinner /> <span className="font-mono text-sm">Loading analyticsâ€¦</span></div>;
   if (!data) return <p className="text-muted py-12 text-center">Analytics unavailable.</p>;
 
   return (
@@ -67,7 +67,7 @@ export default function AnalyticsPanel() {
 
       {/* Revenue chart */}
       <div className="border-2 border-ink p-5">
-        <h3 className="eyebrow mb-4">Revenue — last {days} days</h3>
+        <h3 className="eyebrow mb-4">Revenue â€” last {days} days</h3>
         <RevenueChart series={data.series} />
       </div>
 

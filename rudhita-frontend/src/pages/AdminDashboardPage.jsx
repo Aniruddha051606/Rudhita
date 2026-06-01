@@ -48,7 +48,7 @@ export default function AdminDashboardPage() {
   const [selectedOrderId, setSelectedOrderId] = useState(null);
   const [lowStock, setLowStock] = useState([]);
 
-  // Overview only — lightweight, loads on mount.
+  // Overview only â€” lightweight, loads on mount.
   const loadOverview = async () => {
     setLoading(true);
     try {
@@ -104,7 +104,7 @@ export default function AdminDashboardPage() {
   const onSaved  = () => { setEditorOpen(false); setEditing(null); load(); };
 
   const deleteProduct = async (p) => {
-    if (!window.confirm(`Deactivate “${p.name}”? It will be hidden from the store.`)) return;
+    if (!window.confirm(`Deactivate â€œ${p.name}â€? It will be hidden from the store.`)) return;
     try { await API.adminProducts.remove(p.id); setProducts((prev) => prev.filter((x) => x.id !== p.id)); }
     catch (e) { alert(e.message || 'Could not delete.'); }
   };
@@ -168,7 +168,7 @@ export default function AdminDashboardPage() {
             <LayoutDashboard size={22} className="text-punch" />
             <span className="font-display text-xl font-bold">Rudhita Admin</span>
           </div>
-          <Link to="/"><Button variant="ghost" size="sm">← Back to store</Button></Link>
+          <Link to="/"><Button variant="ghost" size="sm">â† Back to store</Button></Link>
         </div>
       </header>
 
@@ -184,9 +184,9 @@ export default function AdminDashboardPage() {
         </div>
 
         {loading && tab === 'overview' ? (
-          <div className="flex items-center justify-center py-32 gap-3 text-muted"><Spinner /> <span className="font-mono text-sm">Loading…</span></div>
+          <div className="flex items-center justify-center py-32 gap-3 text-muted"><Spinner /> <span className="font-mono text-sm">Loadingâ€¦</span></div>
         ) : tabLoading && (tab === 'orders' || tab === 'products') ? (
-          <div className="flex items-center justify-center py-32 gap-3 text-muted"><Spinner /> <span className="font-mono text-sm">Loading…</span></div>
+          <div className="flex items-center justify-center py-32 gap-3 text-muted"><Spinner /> <span className="font-mono text-sm">Loadingâ€¦</span></div>
         ) : tab === 'overview' ? (
           <>
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
@@ -230,7 +230,7 @@ export default function AdminDashboardPage() {
               <input
                 value={orderSearch}
                 onChange={(e) => setOrderSearch(e.target.value)}
-                placeholder="Search order #, name, email…"
+                placeholder="Search order #, name, emailâ€¦"
                 className="h-10 border-2 border-ink bg-paper px-3 font-sans text-sm focus:outline-none focus:shadow-brutalPunch flex-1 min-w-[200px]"
               />
               <select value={fPayment} onChange={(e) => setFPayment(e.target.value)}
@@ -246,7 +246,7 @@ export default function AdminDashboardPage() {
               </select>
               {selectedOrders.length > 0 && (
                 <Button variant="punch" size="sm" disabled={bulkBusy} onClick={bulkFulfill}>
-                  {bulkBusy ? 'Working…' : `Fulfill ${selectedOrders.length} selected`}
+                  {bulkBusy ? 'Workingâ€¦' : `Fulfill ${selectedOrders.length} selected`}
                 </Button>
               )}
             </div>
@@ -303,7 +303,7 @@ export default function AdminDashboardPage() {
             </div>
           </>
         ) : tab === 'products' ? (
-          // ── PRODUCTS ──
+          // â”€â”€ PRODUCTS â”€â”€
           <>
             <div className="flex justify-between items-center mb-5">
               <p className="font-mono text-sm text-muted">{products.length} product{products.length !== 1 ? 's' : ''}</p>
@@ -335,7 +335,7 @@ export default function AdminDashboardPage() {
                           <span className="font-medium truncate max-w-[200px]">{p.name}</span>
                         </div>
                       </td>
-                      <td className="px-4 py-3 text-sm text-muted">{p.category || '—'}</td>
+                      <td className="px-4 py-3 text-sm text-muted">{p.category || 'â€”'}</td>
                       <td className="px-4 py-3 font-semibold">{formatINR(p.price)}</td>
                       <td className="px-4 py-3">
                         <span className={p.stock_quantity <= 5 ? 'text-punch font-semibold' : ''}>{p.stock_quantity}</span>

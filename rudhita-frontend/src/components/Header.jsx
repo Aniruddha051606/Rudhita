@@ -23,8 +23,8 @@ export default function Header({ onOpenAuth, onOpenCart, onLogout, cartCount = 0
         <div className="flex whitespace-nowrap animate-marquee py-2">
           {[0, 1].map((dup) => (
             <div key={dup} className="flex shrink-0 font-mono text-[11px] uppercase tracking-[0.2em]">
-              {['Complimentary shipping above ₹3,000', 'Handcrafted with intention', 'Monsoon Edit 2026 — now live', 'Made to order across India']
-                .map((t, i) => <span key={i} className="mx-6 flex items-center gap-6">{t}<span className="text-punch">✦</span></span>)}
+              {['Complimentary shipping above â‚¹3,000', 'Handcrafted with intention', 'Monsoon Edit 2026 â€” now live', 'Made to order across India']
+                .map((t, i) => <span key={i} className="mx-6 flex items-center gap-6">{t}<span className="text-punch">âœ¦</span></span>)}
             </div>
           ))}
         </div>

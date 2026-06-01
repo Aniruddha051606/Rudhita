@@ -24,11 +24,11 @@ export default function OrderTrackingPage() {
     return () => { cancelled = true; };
   }, [id]);
 
-  if (loading) return <div className="flex items-center justify-center min-h-[60vh] gap-3 text-muted"><Spinner /> <span className="font-mono text-sm">Loading…</span></div>;
+  if (loading) return <div className="flex items-center justify-center min-h-[60vh] gap-3 text-muted"><Spinner /> <span className="font-mono text-sm">Loadingâ€¦</span></div>;
   if (err) return (
     <div className="max-w-2xl mx-auto px-5 py-32 text-center">
       <p className="font-display text-2xl mb-4">{err}</p>
-      <Link to="/account"><Button variant="outline">← Back to account</Button></Link>
+      <Link to="/account"><Button variant="outline">â† Back to account</Button></Link>
     </div>
   );
 

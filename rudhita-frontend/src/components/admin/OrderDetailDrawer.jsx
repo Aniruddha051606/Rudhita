@@ -57,7 +57,7 @@ export default function OrderDetailDrawer({ orderId, onClose, onChanged }) {
         </div>
 
         {loading ? (
-          <div className="flex-1 flex items-center justify-center gap-3 text-muted"><Spinner /> <span className="font-mono text-sm">Loading…</span></div>
+          <div className="flex-1 flex items-center justify-center gap-3 text-muted"><Spinner /> <span className="font-mono text-sm">Loadingâ€¦</span></div>
         ) : !order ? (
           <div className="flex-1 flex items-center justify-center text-destructive font-mono text-sm">{err || 'Not found.'}</div>
         ) : (
@@ -85,7 +85,7 @@ export default function OrderDetailDrawer({ orderId, onClose, onChanged }) {
               {/* Address */}
               <section>
                 <h3 className="eyebrow mb-2 flex items-center gap-1.5"><MapPin size={12} /> Shipping Address</h3>
-                <p className="text-sm leading-relaxed">{order.shipping_address || '—'}</p>
+                <p className="text-sm leading-relaxed">{order.shipping_address || 'â€”'}</p>
               </section>
 
               {/* Items */}
@@ -101,7 +101,7 @@ export default function OrderDetailDrawer({ orderId, onClose, onChanged }) {
                       </div>
                       <div className="flex-1 min-w-0">
                         <p className="font-medium text-sm truncate">{it.product_name}</p>
-                        <p className="font-mono text-xs text-muted">{it.quantity} × {formatINR(it.price_at_purchase)}</p>
+                        <p className="font-mono text-xs text-muted">{it.quantity} Ã— {formatINR(it.price_at_purchase)}</p>
                       </div>
                       <span className="font-semibold text-sm">{formatINR(it.line_total)}</span>
                     </div>
@@ -135,7 +135,7 @@ export default function OrderDetailDrawer({ orderId, onClose, onChanged }) {
                   <input value={tracking} onChange={(e) => setTracking(e.target.value)} placeholder="Tracking / waybill number"
                     className="h-11 border-2 border-ink bg-paper px-3 font-sans text-sm focus:outline-none focus:shadow-brutalPunch" />
                   <Button variant="primary" onClick={doFulfill} disabled={busy === 'fulfill'}>
-                    {busy === 'fulfill' ? 'Fulfilling…' : 'Mark fulfilled'}
+                    {busy === 'fulfill' ? 'Fulfillingâ€¦' : 'Mark fulfilled'}
                   </Button>
                 </div>
               </section>
@@ -148,7 +148,7 @@ export default function OrderDetailDrawer({ orderId, onClose, onChanged }) {
               </Button>
               {order.payment_status === 'Paid' && !order.razorpay_refund_id && (
                 <Button variant="ghost" className="flex-1 text-destructive" onClick={doRefund} disabled={busy === 'refund'}>
-                  <RotateCcw size={16} /> {busy === 'refund' ? 'Refunding…' : 'Refund'}
+                  <RotateCcw size={16} /> {busy === 'refund' ? 'Refundingâ€¦' : 'Refund'}
                 </Button>
               )}
             </div>

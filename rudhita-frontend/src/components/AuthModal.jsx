@@ -117,9 +117,9 @@ export default function AuthModal({ isOpen, onClose }) {
               <Divider />
               <Input label="Email" type="email" name="email" value={form.email} onChange={set('email')} placeholder="your@email.com" />
               <Input label="Password" type="password" name="password" value={form.password} onChange={set('password')}
-                     placeholder="••••••••" onKeyDown={(e) => e.key === 'Enter' && doLogin()} />
+                     placeholder="â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢" onKeyDown={(e) => e.key === 'Enter' && doLogin()} />
               <Button onClick={doLogin} disabled={busy} size="lg" className="mt-1">
-                {busy ? 'Signing in…' : 'Sign In'}
+                {busy ? 'Signing inâ€¦' : 'Sign In'}
               </Button>
             </div>
           )}
@@ -130,10 +130,10 @@ export default function AuthModal({ isOpen, onClose }) {
               <Divider />
               <Input label="Full Name" name="name" value={form.name} onChange={set('name')} placeholder="Your name" />
               <Input label="Email" type="email" name="email" value={form.email} onChange={set('email')} placeholder="your@email.com" />
-              <Input label="Password" type="password" name="password" value={form.password} onChange={set('password')} placeholder="••••••••" />
+              <Input label="Password" type="password" name="password" value={form.password} onChange={set('password')} placeholder="â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢" />
               <Input label="Phone (optional)" type="tel" name="phone" value={form.phone} onChange={set('phone')} placeholder="+91 98765 43210" />
               <Button onClick={doRegister} disabled={busy} size="lg" className="mt-1">
-                {busy ? 'Creating…' : 'Create Account'}
+                {busy ? 'Creatingâ€¦' : 'Create Account'}
               </Button>
             </div>
           )}
@@ -147,7 +147,7 @@ export default function AuthModal({ isOpen, onClose }) {
                      onChange={(e) => setOtp(e.target.value)} placeholder="000000"
                      className="text-center text-2xl tracking-[0.4em] font-mono" />
               <Button onClick={doOTP} disabled={busy} size="lg">
-                {busy ? 'Verifying…' : 'Verify Account'}
+                {busy ? 'Verifyingâ€¦' : 'Verify Account'}
               </Button>
             </div>
           )}
