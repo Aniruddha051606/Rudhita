@@ -6,7 +6,7 @@ import { API } from '@/api/client';
 import { useCart } from '@/context/CartContext';
 import { Button } from '@/components/ui/Button';
 import ProductCard from '@/components/ProductCard';
-import { Spinner } from '@/components/ui/Spinner';
+import { ProductCardSkeleton } from '@/components/ui/Skeleton';
 
 export default function HomePage() {
   const { addItem } = useCart();
@@ -63,7 +63,9 @@ export default function HomePage() {
         </div>
 
         {loading ? (
-          <div className="flex justify-center py-20 text-muted"><Spinner /></div>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-5">
+            {Array.from({ length: 4 }).map((_, i) => <ProductCardSkeleton key={i} />)}
+          </div>
         ) : featured.length === 0 ? (
           <p className="text-muted text-center py-20">New pieces arriving soon.</p>
         ) : (

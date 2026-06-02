@@ -5,6 +5,7 @@ import { API } from '@/api/client';
 import { useCart } from '@/context/CartContext';
 import ProductCard from '@/components/ProductCard';
 import { Spinner } from '@/components/ui/Spinner';
+import { ProductCardSkeleton } from '@/components/ui/Skeleton';
 import { Button } from '@/components/ui/Button';
 
 const PAGE = 12;
@@ -116,7 +117,9 @@ export default function ProductCatalogPage() {
 
       {/* Grid */}
       {loading && products.length === 0 ? (
-        <div className="flex items-center justify-center py-32 gap-3 text-muted"><Spinner /> <span className="font-mono text-sm">Loadingâ€¦</span></div>
+        <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
+          {Array.from({ length: 8 }).map((_, i) => <ProductCardSkeleton key={i} />)}
+        </div>
       ) : products.length === 0 ? (
         <div className="text-center py-32">
           <p className="font-display text-2xl mb-2">Nothing here yet.</p>

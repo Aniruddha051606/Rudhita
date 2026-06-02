@@ -35,7 +35,7 @@ export default function UserAccountPage() {
   };
 
   return (
-    <div className="max-w-5xl mx-auto px-5 py-12">
+    <div className="max-w-5xl mx-auto px-5 py-12 reveal">
       <div className="flex flex-wrap items-end justify-between gap-4 mb-10">
         <div>
           <p className="eyebrow text-punch mb-3">Your Account</p>

@@ -35,7 +35,7 @@ export default function OrderTrackingPage() {
   const events = data?.events || [];
 
   return (
-    <div className="max-w-2xl mx-auto px-5 py-12">
+    <div className="max-w-2xl mx-auto px-5 py-12 reveal">
       <Link to="/account" className="inline-flex items-center gap-2 font-mono text-xs uppercase tracking-wider text-muted hover:text-punch mb-8">
         <ArrowLeft size={14} /> Account
       </Link>

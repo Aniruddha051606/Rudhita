@@ -111,7 +111,7 @@ export default function CheckoutPage() {
   }
 
   return (
-    <div className="max-w-7xl mx-auto px-5 py-12">
+    <div className="max-w-7xl mx-auto px-5 py-12 reveal">
       <p className="eyebrow text-punch mb-3">Checkout</p>
       <h1 className="h-display text-5xl mb-10">Almost yours.</h1>
 

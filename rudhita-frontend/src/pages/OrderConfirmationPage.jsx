@@ -19,7 +19,7 @@ export default function OrderConfirmationPage() {
   }, [orderId]);
 
   return (
-    <div className="max-w-2xl mx-auto px-5 py-20 text-center">
+    <div className="max-w-2xl mx-auto px-5 py-20 text-center reveal">
       <div className="w-20 h-20 mx-auto mb-8 bg-punch border-2 border-ink shadow-brutal flex items-center justify-center animate-scale-in">
         <Check size={40} strokeWidth={3} className="text-paper" />
       </div>

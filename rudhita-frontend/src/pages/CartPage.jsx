@@ -25,7 +25,7 @@ export default function CartPage() {
   const total = subtotal + shipping + tax;
 
   return (
-    <div className="max-w-7xl mx-auto px-5 py-12">
+    <div className="max-w-7xl mx-auto px-5 py-12 reveal">
       <p className="eyebrow text-punch mb-3">Your Cart</p>
       <h1 className="h-display text-5xl mb-10">Review your pieces.</h1>
 

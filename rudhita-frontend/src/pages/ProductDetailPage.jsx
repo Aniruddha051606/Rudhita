@@ -9,6 +9,7 @@ import { formatINR } from '@/lib/utils';
 import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
 import { Spinner } from '@/components/ui/Spinner';
+import { Skeleton } from '@/components/ui/Skeleton';
 import ProductReviews from '@/components/ProductReviews';
 
 export default function ProductDetailPage({ onRequireAuth }) {
@@ -71,7 +72,24 @@ export default function ProductDetailPage({ onRequireAuth }) {
     }
   };
 
-  if (loading) return <div className="flex items-center justify-center min-h-[60vh] gap-3 text-muted"><Spinner /> <span className="font-mono text-sm">Loadingâ€¦</span></div>;
+  if (loading) return (
+    <div className="max-w-7xl mx-auto px-5 py-8">
+      <div className="grid lg:grid-cols-2 gap-10 lg:gap-16">
+        <Skeleton className="aspect-[4/5] w-full" />
+        <div className="space-y-4 pt-4">
+          <Skeleton className="h-3 w-24 border-0" />
+          <Skeleton className="h-10 w-3/4 border-0" />
+          <Skeleton className="h-6 w-32 border-0" />
+          <div className="space-y-2 pt-4">
+            <Skeleton className="h-4 w-full border-0" />
+            <Skeleton className="h-4 w-full border-0" />
+            <Skeleton className="h-4 w-2/3 border-0" />
+          </div>
+          <Skeleton className="h-14 w-full border-0 mt-6" />
+        </div>
+      </div>
+    </div>
+  );
   if (err && !product) return (
     <div className="max-w-7xl mx-auto px-5 py-32 text-center">
       <p className="font-display text-3xl mb-4">{err}</p>
